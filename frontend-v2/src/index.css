@@ -1,0 +1,40 @@
+@import "tailwindcss";
+
+@theme {
+  --color-cr-dark: #050505;
+  --color-cr-darker: #000000;
+  --color-cr-surface: #111111;
+  --color-cr-border: #2A2A2A;
+  --color-cr-gold: #D4AF37;
+  --color-cr-goldLight: #FCE181;
+  --color-cr-goldDark: #AA801E;
+
+  --font-serif: "Times New Roman", ui-serif, Georgia, serif;
+}
+
+body {
+  background-color: var(--color-cr-darker);
+  color: var(--color-gray-200);
+  font-family: 'Inter', sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Scrollbar Customization for Dark Theme */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: #000;
+}
+::-webkit-scrollbar-thumb {
+  background: #2A2A2A;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #AA801E;
+}

@@ -1,0 +1,44 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: #f5f5f7;
+  --foreground: #1d1d1f;
+  --cr-gold: #D4AF37;
+  --cr-gold-light: #FCE181;
+  --cr-sidebar: #fbfbfd;
+  --cr-sidebar-border: #e5e5ea;
+  --cr-card: #ffffff;
+  --cr-card-border: #e5e5ea;
+  --cr-text: #1d1d1f;
+  --cr-muted: #86868b;
+}
+
+body {
+  color: var(--foreground);
+  background: var(--background);
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+  .cr-card {
+    background: var(--cr-card);
+    border: 1px solid var(--cr-card-border);
+    border-radius: 12px;
+  }
+  .cr-card-hover {
+    transition: box-shadow 0.2s ease, border-color 0.2s ease;
+  }
+  .cr-card-hover:hover {
+    border-color: #d1d1d6;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.06);
+  }
+}

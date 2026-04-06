@@ -1,0 +1,16 @@
+node_modules/
+.next/
+dist/
+build/
+.env*
+*.log
+.DS_Store
+.vscode/
+.idea/
+out/
+coverage/
+.vercel
+/src/generated/prisma
+*.json
+backend/src/*.json
+**/database_3c_cache.json

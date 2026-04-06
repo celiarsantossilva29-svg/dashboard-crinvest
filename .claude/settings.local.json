@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm install:*)",
+      "Bash(npx prisma:*)",
+      "Bash(node_modules/.bin/tsc --noEmit)",
+      "Bash(npx tsc:*)",
+      "Bash(npm run:*)",
+      "Bash(curl -s \"http://localhost:3000/api/kpis/discadores?start=2026-03-01&end=2026-03-31\")",
+      "Bash(curl -s \"http://localhost:3000/api/kpis/funil?start=2026-03-01&end=2026-03-31\")",
+      "Bash(curl -s \"http://localhost:3000/api/kpis/ads?start=2026-03-01&end=2026-03-31\")",
+      "Bash(npx next:*)",
+      "Bash(xargs grep:*)",
+      "Bash(node -e \":*)",
+      "Bash(curl:*)"
+    ]
+  }
+}

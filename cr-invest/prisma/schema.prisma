@@ -1,0 +1,185 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ── Equipe comercial ────────────────────────────────────────────────────────
+
+model Vendedor {
+  id                String   @id
+  nome              String
+  email             String   @unique
+  role              String   // "CLOSER" | "SDR" | "ADMIN"
+  fixoMensal        Float    @default(0)
+  
+  // Faixas de Comissionamento e Metas
+  bronzeRate        Float    @default(0.5)
+  silverRate        Float    @default(0.6)
+  goldRate          Float    @default(0.7)
+  silverMin         Float    @default(1000000)
+  goldMin           Float    @default(3000000)
+  
+  installments      Int      @default(12)
+  
+  // Permissões como JSON (Aba + Escopo: own/all)
+  permissions       String?  @default("{}")
+  
+  password          String?  @default("mudar123") // Senha padrão para novos usuários
+
+  createdAt         DateTime @default(now())
+}
+
+// ── Leads do CRM ────────────────────────────────────────────────────────────
+
+model Lead {
+  id               String    @id
+  source           String
+  campaignId       String?
+  campaignName     String?
+  createdAt        DateTime
+  // ── Rastreabilidade SDR
+  arrivalAt        DateTime?
+  firstContactAt   DateTime?
+  contactAttempts  Int       @default(0)
+  isReagendado     Boolean   @default(false)
+  nextTaskAt       DateTime?
+  // ── Rastreabilidade Closer
+  noShow           Boolean   @default(false)
+  sdrScore         Int?
+  // ── Pipeline
+  contactedAt      DateTime?
+  qualifiedAt      DateTime?
+  scheduledAt      DateTime?
+  meetingAt        DateTime?
+  closedAt         DateTime?
+  status           String
+  lostReason       String?
+  dealValue        Float?
+  assignedTo       String?
+  interactionCount Int       @default(0)
+  syncedAt         DateTime  @default(now())
+  historyLog       Json?
+}
+
+// ── Vendas fechadas ─────────────────────────────────────────────────────────
+
+model Sale {
+  id                  String        @id @default(cuid())
+  leadId              String?
+  value               Float
+  closedAt            DateTime
+  clientName          String
+  assignedTo          String        // Closer
+  sdrName             String?       // SDR (se houver)
+  campaignId          String?
+  notes               String?
+  // Campos de comissionamento (sistema legado)
+  administradora      String?
+  tierCloser          String?
+  percentualCloser    Float?
+  valorComissaoCloser Float?
+  percentualSdr       Float?
+  valorComissaoSdr    Float?
+  clienteCpf          String?
+  createdAt           DateTime      @default(now())
+  installments        Installment[]
+}
+
+// ── Parcelas por venda ──────────────────────────────────────────────────────
+
+model Installment {
+  id             String    @id @default(cuid())
+  saleId         String
+  parcelaNumero  Int
+  dataVencimento DateTime
+  valorParcela   Float
+  pago           Boolean   @default(false)
+  status         String    @default("PENDENTE") // PENDENTE, PAGO, INADIMPLENTE, CANCELADO
+  dataPagamento  DateTime?
+  createdAt      DateTime  @default(now())
+
+  sale Sale @relation(fields: [saleId], references: [id])
+
+  @@unique([saleId, parcelaNumero])
+}
+
+// ── Métricas de mídia paga ──────────────────────────────────────────────────
+
+model AdsMetrics {
+  id           String   @id @default(cuid())
+  date         DateTime
+  campaignId   String
+  campaignName String
+  impressions  Int
+  clicks       Int
+  spend        Float
+  leads        Int
+  cpm          Float
+  ctr          Float
+  cpc          Float
+  cpl          Float
+  syncedAt     DateTime @default(now())
+
+  @@unique([date, campaignId])
+}
+
+// ── Métricas de discadores ──────────────────────────────────────────────────
+
+model DialerMetrics {
+  id           String   @id @default(cuid())
+  date         DateTime
+  source       String   // "goto" | "threec"
+  agentId      String
+  agentName    String
+  totalCalls   Int
+  talkTimeSecs Int
+  syncedAt     DateTime @default(now())
+
+  @@unique([date, source, agentId])
+}
+
+// ── Metas do ciclo ──────────────────────────────────────────────────────────
+
+model Goal {
+  id        String   @id @default(cuid())
+  cycleName String
+  startDate DateTime
+  endDate   DateTime
+  target    Float
+  createdAt DateTime @default(now())
+}
+
+// ── Logs de sincronização ───────────────────────────────────────────────────
+
+model SyncLog {
+  id       String   @id @default(cuid())
+  source   String   // "kommo" | "facebook" | "goto" | "threec"
+  status   String   // "success" | "error"
+  message  String?
+  syncedAt DateTime @default(now())
+}
+
+// ── Token OAuth Kommo ───────────────────────────────────────────────────────
+
+model KommoToken {
+  id           String   @id @default(cuid())
+  accessToken  String
+  refreshToken String
+  expiresAt    DateTime
+  updatedAt    DateTime @updatedAt
+}
+
+// ── Configurações Globais de Comissionamento ─────────────────────────────────
+
+model CommissionConfig {
+  id           String   @id @default("global")
+  fixedSalary  Float    @default(3000)
+  percentage   Float    @default(0.5) // Ex: 0.5%
+  installments Int      @default(12)
+  updatedAt    DateTime @updatedAt
+}
