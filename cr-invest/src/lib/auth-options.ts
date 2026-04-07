@@ -1,5 +1,6 @@
 import { AuthOptions } from "next-auth";
 import CredentialsProvider from "next-auth/providers/credentials";
+import bcrypt from "bcryptjs";
 import { prisma } from "./prisma";
 
 export const authOptions: AuthOptions = {
@@ -41,7 +42,7 @@ export const authOptions: AuthOptions = {
              where: { email: credentials.email }
           });
 
-          if (user && user.password === credentials.password) {
+          if (user && user.password && await bcrypt.compare(credentials.password, user.password)) {
              return {
                id: user.id,
                name: user.nome,

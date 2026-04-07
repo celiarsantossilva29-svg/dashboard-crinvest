@@ -30,6 +30,8 @@ model Vendedor {
   permissions       String?  @default("{}")
   
   password          String?  @default("mudar123") // Senha padrão para novos usuários
+  status            String   @default("ATIVO")   // "ATIVO" | "INATIVO"
+  ultimoAcesso      DateTime?
 
   createdAt         DateTime @default(now())
 }
@@ -93,15 +95,19 @@ model Sale {
 // ── Parcelas por venda ──────────────────────────────────────────────────────
 
 model Installment {
-  id             String    @id @default(cuid())
-  saleId         String
-  parcelaNumero  Int
-  dataVencimento DateTime
-  valorParcela   Float
-  pago           Boolean   @default(false)
-  status         String    @default("PENDENTE") // PENDENTE, PAGO, INADIMPLENTE, CANCELADO
-  dataPagamento  DateTime?
-  createdAt      DateTime  @default(now())
+  id                  String    @id @default(cuid())
+  saleId              String
+  parcelaNumero       Int
+  dataVencimento      DateTime
+  valorParcela        Float
+  pago                Boolean   @default(false)
+  status              String    @default("PENDENTE") // PENDENTE, PAGO, INADIMPLENTE, CANCELADO
+  dataPagamento       DateTime?
+  dataConfirmacao     DateTime? // Quando o admin confirmou o recebimento
+  confirmedBy         String?   // ID do Vendedor (admin) que confirmou
+  motivoCancelamento  String?   // Preenchido quando status = CANCELADO
+  observacoes         String?   // Notas livres sobre a parcela
+  createdAt           DateTime  @default(now())
 
   sale Sale @relation(fields: [saleId], references: [id])
 
@@ -171,6 +177,70 @@ model KommoToken {
   accessToken  String
   refreshToken String
   expiresAt    DateTime
+  updatedAt    DateTime @updatedAt
+}
+
+// ── Metas mensais do time ───────────────────────────────────────────────────
+
+model TeamGoal {
+  id          String   @id @default(cuid())
+  month       DateTime // Primeiro dia do mês (ex: 2025-06-01)
+  goalAmount  Float    // Meta global em R$
+  realized    Float    @default(0) // Calculado ao fechar o ciclo
+  cycleStart  DateTime
+  cycleEnd    DateTime
+  status      String   @default("open") // "open" | "closed"
+  closedAt    DateTime?
+  closedBy    String?  // ID do admin que fechou
+  createdAt   DateTime @default(now())
+
+  @@unique([month])
+}
+
+// ── Metas mensais individuais por closer ────────────────────────────────────
+
+model CloserGoal {
+  id             String   @id @default(cuid())
+  month          DateTime // Primeiro dia do mês
+  closerId       String   // ID do Vendedor
+  closerName     String
+  goalDeals      Int      // Meta em número de vendas
+  goalAmount     Float    // Meta em receita R$
+  realizedDeals  Int      @default(0) // Calculado
+  realizedAmount Float    @default(0) // Calculado
+  commissionPct  Float    @default(0) // % de comissão do mês
+  createdAt      DateTime @default(now())
+
+  @@unique([month, closerId])
+}
+
+// ── Histórico calculado por closer/mês ──────────────────────────────────────
+
+model CloserMonthlySummary {
+  id               String   @id @default(cuid())
+  month            DateTime
+  closerId         String
+  closerName       String
+  totalDeals       Int      @default(0)
+  totalRevenue     Float    @default(0)
+  avgTicket        Float    @default(0)
+  winRate          Float    @default(0)
+  commissionEarned Float    @default(0)
+  goalDeals        Int?     // Snapshot da meta do mês
+  goalAmount       Float?   // Snapshot da meta do mês
+  syncedAt         DateTime @default(now())
+
+  @@unique([month, closerId])
+}
+
+// ── Token OAuth GoTo Connect ────────────────────────────────────────────────
+
+model GoToToken {
+  id           String   @id @default(cuid())
+  accessToken  String
+  refreshToken String
+  expiresAt    DateTime
+  accountKey   String?
   updatedAt    DateTime @updatedAt
 }
 

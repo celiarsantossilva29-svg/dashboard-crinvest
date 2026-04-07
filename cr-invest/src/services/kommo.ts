@@ -48,17 +48,49 @@ const BASE = () => `https://${SUBDOMAIN()}.kommo.com/api/v4`;
 // ─── Pipeline status → internal status ────────────────────────────────────────
 
 const STATUS_MAP: Record<string, string> = {
-  // Nomes padrão do Kommo (ajuste conforme seu pipeline)
-  "Novo":               "new",
-  "Contatado":          "contacted",
-  "Qualificado":        "qualified",
-  "Reunião agendada":   "scheduled",
-  "Reunião realizada":  "meeting",
-  // Variantes comuns
-  "Primeiro contato":   "contacted",
-  "Em qualificação":    "qualified",
-  "Agendado":           "scheduled",
-  "Realizado":          "meeting",
+  // ── PRÉ-VENDAS (pipeline principal — SDR) ─────────────────────────────────
+  "Etapa de leads de entrada":  "new",
+  "dia 1":                      "contacted",
+  "dia 2":                      "contacted",
+  "dia 3":                      "contacted",
+  "dia 5":                      "contacted",
+  "dia 7":                      "contacted",
+  "dia 10":                     "contacted",
+  "1° Reunião Confirmada":      "scheduled",
+  "Reagendamento - R1":         "scheduled",
+
+  // ── VENDAS (pipeline closer) ───────────────────────────────────────────────
+  "1° Reunião Realizada":       "meeting",
+  "2° Reunião AGENDADA":        "scheduled",
+  "Reagendamento - R2":         "scheduled",
+  "Negociação":                 "meeting",
+  "Contato Futuro":             "new",
+
+  // ── PRÉ-VENDAS 2.0 ────────────────────────────────────────────────────────
+  "NOVO":                       "new",
+  "ABERTURA":                   "contacted",
+  "CONEXÃO":                    "contacted",
+  "QUALIFICADOS":               "qualified",
+  "AGENDADOS":                  "scheduled",
+  "rEUNIÃO REALIZADATEMOS":     "meeting",
+  "NO SHOW":                    "new",
+
+  // ── RECUPERAÇÃO ───────────────────────────────────────────────────────────
+  "Contato inicial":            "contacted",
+  "1ª Tentativa":               "contacted",
+  "2ª Tentativa":               "contacted",
+  "3ª Tentativa":               "contacted",
+  "Oferta feita":               "meeting",
+
+  // ── Campanha | Nutrição ───────────────────────────────────────────────────
+  "BASE Antiga":                "new",
+  "Leads":                      "new",
+  "Cancelados":                 "lost",
+  "Cliente Detrator":           "new",
+  "Cliente Promotor":           "won",
+  "Campanha 1":                 "contacted",
+  "Campanha 2":                 "contacted",
+  "Não quer receber Mensagem":  "lost",
 };
 
 function mapStatus(stageName: string, statusId: number): string {
@@ -199,7 +231,7 @@ async function fetchKommoPipelines(
 > {
   assertReadOnly("GET");
 
-  const res = await fetch(`${BASE()}/pipelines?limit=250`, {
+  const res = await fetch(`${BASE()}/leads/pipelines?limit=250`, {
     headers: { Authorization: `Bearer ${token}` },
   });
 
