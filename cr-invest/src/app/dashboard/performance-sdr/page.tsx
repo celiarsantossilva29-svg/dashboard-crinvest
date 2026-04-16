@@ -37,36 +37,22 @@ function fmtBRL(v: number) {
 // ─── inline components ───────────────────────────────────────────────────────
 
 function SpeedArcGauge({ value = 0 }: { value?: number }) {
-  const meta = 20;
-  // Se for maior que 60 min, trava no cap para não quebrar a UI
-  const cappedValue = Math.min(value, 60); 
+  const cappedValue = Math.min(value, 60);
   const hasData = value > 0;
-  
-  // Math for the arc: total length of a half circle is ~188 (PI * R, where R is 60).
   const circumference = Math.PI * 60;
-  // If value is 0-20 min, it should be green. 20-40 min yellow. >40 min red.
-  // For the offset (0 is empty, circumference is full).
-  // Let's assume max scale is 60 min (circumference = 60). So 1 min = circumference / 60
   const dashoffset = circumference - (cappedValue / 60) * circumference;
-  
-  let color = "#d97706"; // Default orange (warning)
-  if (!hasData) color = "#d1d5db"; // Gray if no data
-  else if (value <= 20) color = "#10b981"; // Green (good)
-  else if (value > 40) color = "#ef4444"; // Red (bad)
-
+  let color = "#d97706";
+  if (!hasData) color = "#d1d5db";
+  else if (value <= 20) color = "#10b981";
+  else if (value > 40) color = "#ef4444";
   return (
     <div className="relative flex flex-col items-center justify-center w-full h-[80px]">
       <svg width="140" height="70" viewBox="0 0 140 70" className="overflow-visible">
-        {/* Track */}
         <path d="M 10 70 A 60 60 0 0 1 130 70" fill="none" stroke="#f0f0f5" strokeWidth="12" strokeLinecap="round" />
-        {/* Filled part */}
-        <path d="M 10 70 A 60 60 0 0 1 130 70" fill="none" stroke={color} strokeWidth="12" strokeLinecap="round" strokeDasharray={circumference} strokeDashoffset={hasData ? dashoffset : circumference - 1} style={{ transition: 'stroke-dashoffset 0.5s ease-in-out' }} />
-        {/* Needle indicator for 'meta: 20min' -> roughly at 12 o'clock center (assuming 30 min is center, 20 min is 1/3) */}
-        <line x1="55" y1="18" x2="62" y2="28" stroke="#d97706" strokeWidth="2" style={{ transform: 'rotate(-10deg)', transformOrigin: 'center' }} />
-        <rect x="52" y="32" width="36" height="2" fill="#d1d5db" rx="1" />
+        <path d="M 10 70 A 60 60 0 0 1 130 70" fill="none" stroke={color} strokeWidth="12" strokeLinecap="round" strokeDasharray={circumference} strokeDashoffset={hasData ? dashoffset : circumference - 1} style={{ transition: "stroke-dashoffset 0.5s ease-in-out" }} />
       </svg>
       <div className="absolute bottom-2 text-center">
-        <p className="text-[10px] text-[#9ca3af]">meta: 20min</p>
+        <p className="text-[10px] text-[#9ca3af]">meta: ≤ 20min</p>
         <p className="text-[11px] font-medium text-[#1d1d1f]">{hasData ? `${Math.round(value)}m` : "Sem dados"}</p>
       </div>
     </div>
@@ -105,6 +91,8 @@ export default function PerformanceSdrPage() {
   const [error, setError] = useState<string | null>(null);
   const [sales, setSales] = useState<any[]>([]);
   const [metaGeral, setMetaGeral] = useState<any>(null);
+  const [metaGeralInput, setMetaGeralInput] = useState<string>("");
+  const [savingMetaGeral, setSavingMetaGeral] = useState(false);
   const [metaAgend, setMetaAgend] = useState<number>(0);
   const [metaAgendInput, setMetaAgendInput] = useState<string>("");
   const [savingMeta, setSavingMeta] = useState(false);
@@ -153,32 +141,74 @@ export default function PerformanceSdrPage() {
 
   const userId = (session?.user as any)?.id;
 
-  // Carrega meta individual do SDR ao montar ou quando userId muda
+  // Chave da meta:
+  // - SDR sem filtro (ou scope=own) → chave pelo próprio nome
+  // - Admin com SDR específico selecionado → chave pelo nome do SDR
+  // - Admin sem filtro → chave global (aplica para todos que não têm meta individual)
+  const metaAgentKey = (() => {
+    if (selectedAgent) return `sdr_meta_pct_${selectedAgent.toLowerCase().replace(/\s+/g, "_")}`;
+    if (!isAdmin && userName) return `sdr_meta_pct_${userName.toLowerCase().replace(/\s+/g, "_")}`;
+    return "sdr_meta_pct_global"; // admin sem filtro = meta padrão do time
+  })();
+  const isGlobalMeta = metaAgentKey === "sdr_meta_pct_global";
+
+  // Carrega meta quando o agente selecionado (ou usuário) mudar
   useEffect(() => {
-    if (!userId || userId === "admin") return;
-    fetch(`/api/settings?key=sdr_meta_agend_${userId}`)
+    fetch(`/api/settings?key=${metaAgentKey}`)
       .then(r => r.json())
-      .then(j => {
+      .then(async j => {
         const v = parseInt(j.data ?? "0") || 0;
-        setMetaAgend(v);
-        setMetaAgendInput(v > 0 ? String(v) : "");
+        if (v > 0) {
+          setMetaAgend(v);
+          setMetaAgendInput(String(v));
+        } else if (!isGlobalMeta) {
+          // Se não tem meta individual, tenta carregar a global como fallback
+          const gRes = await fetch("/api/settings?key=sdr_meta_pct_global");
+          const gJson = await gRes.json();
+          const gv = parseInt(gJson.data ?? "0") || 0;
+          setMetaAgend(gv);
+          setMetaAgendInput(""); // não preenche o input com o valor herdado
+        } else {
+          setMetaAgend(0);
+          setMetaAgendInput("");
+        }
       })
       .catch(() => {});
-  }, [userId]);
+  }, [metaAgentKey]);
 
   const saveMeta = async () => {
-    if (!userId || userId === "admin") return;
-    const v = parseInt(metaAgendInput) || 0;
+    const v = Math.min(100, Math.max(0, parseInt(metaAgendInput) || 0));
     setSavingMeta(true);
     try {
       await fetch("/api/settings", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ key: `sdr_meta_agend_${userId}`, value: String(v) }),
+        body: JSON.stringify({ key: metaAgentKey, value: String(v) }),
       });
       setMetaAgend(v);
     } finally {
       setSavingMeta(false);
+    }
+  };
+
+  const saveMetaGeral = async () => {
+    const goalId = metaGeral?.goal?.id;
+    if (!goalId) return;
+    const v = parseFloat(metaGeralInput.replace(/\./g, "").replace(",", ".")) || 0;
+    setSavingMetaGeral(true);
+    try {
+      const res = await fetch(`/api/goals?id=${goalId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ target: v }),
+      });
+      const json = await res.json();
+      if (json.data) {
+        setMetaGeral((prev: any) => ({ ...prev, goal: { ...prev.goal, target: json.data.target } }));
+        setMetaGeralInput("");
+      }
+    } finally {
+      setSavingMetaGeral(false);
     }
   };
 
@@ -189,7 +219,7 @@ export default function PerformanceSdrPage() {
       const [res, resSales, resMeta] = await Promise.all([
         fetch(`/api/kpis/performance-sdr?start=${start}&end=${end}`),
         fetch(`/api/sales?start=${start}&end=${end}`),
-        fetch("/api/kpis/meta"),
+        fetch("/api/kpis/meta?originSdr=true"),
       ]);
       const [json, jsonSales, jsonMeta] = await Promise.all([
         res.json(), resSales.json(), resMeta.json(),
@@ -343,6 +373,155 @@ export default function PerformanceSdrPage() {
           </div>
         )}
 
+        {/* ── METAS ───────────────────────────────────────────────────────── */}
+        <div className="flex gap-4 mb-6">
+
+          {/* Meta Individual */}
+          <div className="flex-1 bg-white rounded-xl border border-[#e5e5ea] shadow-sm p-5">
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-[12px] font-bold text-[#1d1d1f] uppercase tracking-wide">
+                {isGlobalMeta ? "Meta Padrão · Todos os SDRs" : "Meta Individual · Agend."}
+              </h3>
+              <span className="text-[10px] text-[#86868b]">{mesLabel(start)}</span>
+            </div>
+            {(() => {
+              // Encontra stats do agente visualizado (filtro selecionado ou usuário logado)
+              const agentName = selectedAgent ?? userName;
+              const myStats = agentName
+                ? stats.find((r: any) => {
+                    const n = agentName.toLowerCase();
+                    const a = (r.agentName ?? "").toLowerCase();
+                    return a.startsWith(n) || n.startsWith(a.split(" ")[0]);
+                  })
+                : null;
+
+              // Para a meta: soma agendamentos do SDR + agendamentos da IA nos leads deste SDR
+              const agendSdr = myStats?.agendamentos ?? sdrAgend;
+              const agendIa  = myStats?.agendamentosIa ?? 0;
+              const realizado = agendSdr + agendIa; // usado só na meta
+
+              const leadsRecebidos = myStats?.leadsGerados ?? totais?.leadsGerados ?? 0;
+              const metaEsperado = metaAgend > 0 ? Math.round(leadsRecebidos * metaAgend / 100) : 0;
+              const pctAtingido = metaEsperado > 0 ? Math.min(100, Math.round((realizado / metaEsperado) * 100)) : 0;
+              const color = pctAtingido >= 100 ? "#16a34a" : pctAtingido >= 60 ? "#d97706" : "#dc2626";
+              return (
+                <div className="mb-4">
+                  {/* Linha principal: agendamentos feitos vs esperados */}
+                  <div className="flex justify-between items-baseline mb-2">
+                    <div>
+                      <span className="text-[24px] font-black text-[#1d1d1f] leading-none">{realizado}</span>
+                      <span className="text-[12px] text-[#86868b] ml-1">agend.</span>
+                    </div>
+                    <span className="text-[12px] text-[#86868b]">
+                      esperado <strong className="text-[#1d1d1f]">{metaEsperado > 0 ? metaEsperado : "—"}</strong>
+                    </span>
+                  </div>
+                  {/* Barra de progresso */}
+                  <div className="w-full h-2 bg-[#f0f0f5] rounded-full overflow-hidden">
+                    <div className="h-full rounded-full transition-all duration-700" style={{ width: `${pctAtingido}%`, background: color }} />
+                  </div>
+                  <div className="flex justify-between mt-1 text-[10px]">
+                    <span style={{ color }}>{pctAtingido}% da meta</span>
+                    {metaEsperado > 0 && realizado < metaEsperado && (
+                      <span className="text-[#86868b]">faltam {metaEsperado - realizado}</span>
+                    )}
+                  </div>
+                  {/* Info secundária */}
+                  <div className="flex gap-3 mt-2 pt-2 border-t border-[#f0f0f5] text-[10px] text-[#86868b]">
+                    <span>{leadsRecebidos} leads recebidos</span>
+                    <span>·</span>
+                    {agendIa > 0 && <><span>{agendSdr} SDR + {agendIa} IA</span><span>·</span></>}
+                    <span>meta: {metaAgend > 0 ? `${metaAgend}% de conv.` : "não definida"}</span>
+                  </div>
+                </div>
+              );
+            })()}
+            <div className="flex items-center gap-2 border-t border-[#f0f0f5] pt-3">
+              <div className="relative flex-1">
+                <input
+                  type="number" min={0} max={100} value={metaAgendInput}
+                  onChange={e => setMetaAgendInput(e.target.value)}
+                  placeholder={isGlobalMeta ? "meta % para todos (ex: 40)" : "meta % (ex: 40)"}
+                  className="w-full border border-[#e5e5ea] rounded-lg pl-3 pr-7 py-1.5 text-[12px] text-[#1d1d1f] focus:outline-none focus:ring-2 focus:ring-[#b49136]"
+                />
+                <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[12px] text-[#86868b] pointer-events-none">%</span>
+              </div>
+              <button onClick={saveMeta} disabled={savingMeta || !metaAgendInput}
+                className="px-3 py-1.5 rounded-lg text-[11px] font-semibold text-white bg-[#1d1d1f] hover:bg-[#333] transition-colors disabled:opacity-50">
+                {savingMeta ? "..." : "Salvar"}
+              </button>
+            </div>
+          </div>
+
+          {/* Meta Geral */}
+          <div className="flex-1 bg-white rounded-xl border border-[#e5e5ea] shadow-sm p-5">
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-[12px] font-bold text-[#1d1d1f] uppercase tracking-wide">Meta Geral · Originadas via SDR</h3>
+              <span className="text-[10px] text-[#86868b]">{metaGeral?.goal?.cycleName ?? "—"}</span>
+            </div>
+            {metaGeral ? (() => {
+              const target = metaGeral.goal?.target ?? 0;
+              const achieved = metaGeral.achieved ?? 0;
+              const pct = target > 0 ? Math.min(100, Math.round((achieved / target) * 100)) : 0;
+              const color = pct >= 100 ? "#16a34a" : pct >= 60 ? "#d97706" : "#dc2626";
+              const fmtM = (v: number) => v >= 1_000_000
+                ? `R$ ${(v/1_000_000).toFixed(2).replace(".", ",")}M`
+                : new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL", maximumFractionDigits: 0 }).format(v);
+              return (
+                <>
+                  <div className="flex justify-between items-baseline mb-2">
+                    <span className="text-[24px] font-black text-[#1d1d1f] leading-none">{fmtM(achieved)}</span>
+                    <span className="text-[12px] text-[#86868b]">meta <strong className="text-[#1d1d1f]">{fmtM(target)}</strong></span>
+                  </div>
+                  <div className="w-full h-2 bg-[#f0f0f5] rounded-full overflow-hidden mb-1">
+                    <div className="h-full rounded-full transition-all duration-700" style={{ width: `${pct}%`, background: color }} />
+                  </div>
+                  <div className="flex justify-between text-[10px] mb-3">
+                    <span style={{ color }}>{pct}% da meta</span>
+                    {achieved < target && <span className="text-[#86868b]">faltam {fmtM(target - achieved)}</span>}
+                  </div>
+                  <div className="grid grid-cols-3 gap-2 border-t border-[#f0f0f5] pt-3 mb-3">
+                    <div className="text-center">
+                      <p className="text-[9px] text-[#86868b] uppercase tracking-wide mb-0.5">Vendas</p>
+                      <p className="text-[14px] font-bold text-[#1d1d1f]">{metaGeral.wonCount ?? 0}</p>
+                    </div>
+                    <div className="text-center">
+                      <p className="text-[9px] text-[#86868b] uppercase tracking-wide mb-0.5">Ticket Médio</p>
+                      <p className="text-[14px] font-bold text-[#1d1d1f]">{metaGeral.wonCount > 0 ? fmtM(achieved / metaGeral.wonCount) : "—"}</p>
+                    </div>
+                    <div className="text-center">
+                      <p className="text-[9px] text-[#86868b] uppercase tracking-wide mb-0.5">Dias Rest.</p>
+                      <p className="text-[14px] font-bold text-[#1d1d1f]">{metaGeral.daysLeft ?? 0}</p>
+                    </div>
+                  </div>
+                  {isAdmin && (
+                    <div className="flex items-center gap-2 border-t border-[#f0f0f5] pt-3">
+                      <input
+                        type="number" min={0} value={metaGeralInput}
+                        onChange={e => setMetaGeralInput(e.target.value)}
+                        placeholder="nova meta (R$)..."
+                        className="flex-1 border border-[#e5e5ea] rounded-lg px-3 py-1.5 text-[12px] text-[#1d1d1f] focus:outline-none focus:ring-2 focus:ring-[#b49136]"
+                      />
+                      <button onClick={saveMetaGeral} disabled={savingMetaGeral || !metaGeralInput}
+                        className="px-3 py-1.5 rounded-lg text-[11px] font-semibold text-white bg-[#1d1d1f] hover:bg-[#333] transition-colors disabled:opacity-50">
+                        {savingMetaGeral ? "..." : "Salvar"}
+                      </button>
+                    </div>
+                  )}
+                </>
+              );
+            })() : (
+              <>
+                <p className="text-[12px] text-[#86868b] mb-3">Nenhuma meta configurada.</p>
+                {isAdmin && (
+                  <p className="text-[11px] text-[#86868b]">Crie uma meta em Configurações para editar aqui.</p>
+                )}
+              </>
+            )}
+          </div>
+
+        </div>
+
         {/* ── FUNIL ATIVO ─────────────────────────────────────────────────── */}
         <div className="mb-8">
           <h2 className="text-[11px] font-semibold text-[#86868b] uppercase tracking-wider mb-2">Funil Ativo</h2>
@@ -409,7 +588,7 @@ export default function PerformanceSdrPage() {
               const gridCols = cols <= 2 ? "grid-cols-2" : cols === 3 ? "grid-cols-3" : "grid-cols-4";
 
               const PanelCard = ({ label, avatar, bg, agendamentos, noShows, taxaNoShow, highlight }: any) => {
-                const nsColor = taxaNoShow > 30 ? "text-[#dc2626]" : taxaNoShow > 15 ? "text-[#eab308]" : "text-[#16a34a]";
+                const nsColor = taxaNoShow > 35 ? "text-[#DC2626]" : "text-[#16A34A]";
                 return (
                   <div className={`rounded-[10px] border p-4 ${highlight ? "border-[#b49136] bg-[#fffbeb]" : "border-[#f0f0f5] bg-[#fafafa]"}`}>
                     <div className="flex items-center gap-2 mb-4">
@@ -484,12 +663,12 @@ export default function PerformanceSdrPage() {
         <div className="mb-8">
           <h2 className="text-[11px] font-semibold text-[#86868b] uppercase tracking-wider mb-2">Esforço Operacional</h2>
           <div className="bg-white rounded-xl border border-[#e5e5ea] shadow-sm flex items-stretch divide-x divide-[#f0f0f5]">
-            
+
             <div className="flex-1 p-6 flex flex-col justify-between">
               <p className="text-[11px] font-semibold text-[#86868b] uppercase tracking-widest text-center mb-1">Speed-to-Lead</p>
               <SpeedArcGauge value={displayed.length > 0 ? displayed.reduce((s: any, r: any) => s + r.speedToLeadMin, 0) / displayed.length : 0} />
             </div>
-            
+
             <div className="flex-1 p-6 flex flex-col justify-center gap-4">
               <div>
                 <p className="text-[11px] font-semibold text-[#86868b] uppercase tracking-widest mb-1">Lig. / Lead</p>
@@ -511,13 +690,16 @@ export default function PerformanceSdrPage() {
 
             <div className="flex-1 p-6 flex flex-col justify-center">
               <p className="text-[11px] font-semibold text-[#86868b] uppercase tracking-widest mb-3">No-Show</p>
-              <p className="text-[32px] font-black leading-none text-[#1d1d1f] tracking-tight">
-                {(() => {
-                  const totalAgend = displayed.reduce((s: any, r: any) => s + (r.agendamentos || 0), 0);
-                  const totalNoShows = displayed.reduce((s: any, r: any) => s + (r.noShowsNoPeriodo || 0), 0);
-                  return totalAgend > 0 ? ((totalNoShows / totalAgend) * 100).toFixed(1) : "0";
-                })()}%
-              </p>
+              {(() => {
+                const totalAgend = displayed.reduce((s: any, r: any) => s + (r.agendamentos || 0), 0);
+                const totalNoShows = displayed.reduce((s: any, r: any) => s + (r.noShowsNoPeriodo || 0), 0);
+                const val = totalAgend > 0 ? parseFloat(((totalNoShows / totalAgend) * 100).toFixed(1)) : 0;
+                return (
+                  <p className={`text-[32px] font-black leading-none tracking-tight ${val <= 35 ? "text-[#16A34A]" : "text-[#DC2626]"}`}>
+                    {val}%
+                  </p>
+                );
+              })()}
               <p className="text-[12px] text-[#86868b] mt-2">reuniões com ausência</p>
             </div>
 
@@ -551,10 +733,10 @@ export default function PerformanceSdrPage() {
         </div>
 
         {/* ── GRID INFERIOR ───────────────────────────────────────────────── */}
-        <div className="flex flex-col lg:flex-row gap-6 items-start">
-          
+        <div className="flex flex-col lg:flex-row gap-6 items-stretch">
+
           {/* LADO ESQUERDO (65%) */}
-          <div className="w-full lg:w-[63%] flex flex-col gap-6">
+          <div className="w-full lg:w-[63%] flex flex-col gap-4">
              
              {/* Resultados de Agendamentos */}
              <div className="bg-white rounded-xl border border-[#e5e5ea] shadow-sm p-6">
@@ -581,79 +763,37 @@ export default function PerformanceSdrPage() {
                            <span className="text-[13px] text-[#374151]">Conversão SDR</span>
                            <span className="text-[9px] text-[#9ca3af] leading-tight">Agendamentos ÷ Leads<br/>atendimento</span>
                          </div>
-                         <span className="font-bold text-[16px]">{displayed.reduce((s: any, r: any) => s + r.leadsGerados, 0) > 0 ? ((displayed.reduce((s: any, r: any) => s + r.agendamentos, 0) / displayed.reduce((s: any, r: any) => s + r.leadsGerados, 0)) * 100).toFixed(1) : '0'}%</span>
+                         {(() => { const ag = displayed.reduce((s: any, r: any) => s + r.agendamentos, 0); const lg = displayed.reduce((s: any, r: any) => s + r.leadsGerados, 0); const val = lg > 0 ? (ag / lg) * 100 : 0; return <span className={`font-bold text-[16px] ${val >= 35 ? "text-[#16A34A]" : "text-[#DC2626]"}`}>{val.toFixed(1)}%</span>; })()}
                       </div>
                    </div>
                 </div>
              </div>
 
-             {/* Passagem de Bastão */}
-             <div className="bg-white rounded-xl border border-[#e5e5ea] shadow-sm p-6">
-                <h3 className="text-[14px] font-bold text-[#1d1d1f] mb-6">Passagem de Bastão SDR → Closer</h3>
-                
-                <div className="flex items-center justify-between">
-                   <div className="flex items-center gap-4">
-                      <span className="text-[13px] text-[#374151]">Leads passados a Closer</span>
-                      <div className="bg-[#f3f4f6] text-[#1d1d1f] font-bold rounded px-4 py-1 text-[15px] mr-8">{displayed.reduce((s: any, r: any) => s + (r.reunioes || 0), 0)}</div>
-                   </div>
-                   
-                   <div className="flex items-center gap-12">
-                      <div className="flex items-center gap-4">
-                         <span className="text-[13px] text-[#374151]">Speed</span>
-                         {(() => { const avg = displayed.length > 0 ? displayed.reduce((s: any, r: any) => s + r.speedToLeadMin, 0) / displayed.length : 0; const color = avg <= 20 ? '#22c55e' : avg <= 60 ? '#d97706' : '#ef4444'; return (<div className="flex gap-1.5"><div className="w-2.5 h-2.5 rounded-full" style={{backgroundColor: color}}></div><span className="text-[12px] font-semibold" style={{color}}>{Math.round(avg)}m</span></div>); })()}
+             {/* Passagem de Bastão + Passagem a SDR — lado a lado */}
+             <div className="flex gap-4">
+                <div className="flex-1 bg-white rounded-xl border border-[#e5e5ea] shadow-sm p-5">
+                   <h3 className="text-[13px] font-bold text-[#1d1d1f] mb-4">Passagem de Bastão SDR → Closer</h3>
+                   <div className="flex flex-col gap-3">
+                      <div className="flex items-center justify-between">
+                         <span className="text-[12px] text-[#374151]">Leads passados a Closer</span>
+                         <div className="bg-[#f3f4f6] text-[#1d1d1f] font-bold rounded px-3 py-1 text-[15px]">{displayed.reduce((s: any, r: any) => s + (r.reunioes || 0), 0)}</div>
                       </div>
-
-                      <div className="flex items-center gap-4">
-                         <span className="text-[13px] text-[#374151]">Tarefas abertas</span>
-                         <div className="bg-[#f3f4f6] text-[#1d1d1f] font-bold rounded px-4 py-1 text-[15px]">{totais?.tarefasVencidas ?? 0}</div>
+                      <div className="flex items-center justify-between border-t border-[#f0f0f5] pt-3">
+                         <span className="text-[12px] text-[#374151]">Tarefas abertas</span>
+                         <div className="bg-[#f3f4f6] text-[#1d1d1f] font-bold rounded px-3 py-1 text-[15px]">{totais?.tarefasVencidas ?? 0}</div>
                       </div>
                    </div>
                 </div>
-             </div>
 
-             {/* Sub Grid (Passagem a SDR & Qualidade [Bot]) */}
-             <div className="flex gap-6">
-                <div className="w-1/2 bg-white rounded-xl border border-[#e5e5ea] shadow-sm p-6">
-                   <h3 className="text-[14px] font-bold text-[#1d1d1f] mb-6">Passagem a SDR</h3>
-                   <div className="flex items-center justify-between mb-4">
-                      <span className="text-[13px] text-[#374151]">Leads recebidos no período</span>
-                      <div className="bg-[#f3f4f6] text-[#1d1d1f] font-bold rounded px-4 py-1 text-[15px]">{totais?.leadsGerados ?? 0}</div>
+                <div className="flex-1 bg-white rounded-xl border border-[#e5e5ea] shadow-sm p-5">
+                   <h3 className="text-[13px] font-bold text-[#1d1d1f] mb-4">Passagem a SDR</h3>
+                   <div className="flex items-center justify-between">
+                      <span className="text-[12px] text-[#374151]">Leads recebidos no período</span>
+                      <div className="bg-[#f3f4f6] text-[#1d1d1f] font-bold rounded px-3 py-1 text-[15px]">{totais?.leadsGerados ?? 0}</div>
                    </div>
-                   <div className="flex items-center gap-2 mt-6">
-                      <div className="flex gap-1">
-                        <div className="w-2 h-2 rounded-full bg-[#d97706]"></div>
-                        <div className="w-2 h-2 rounded-full bg-[#d97706]"></div>
-                        <div className="w-2 h-2 rounded-full bg-[#d97706]"></div>
-                        <div className="w-2 h-2 rounded-full bg-[#e5e7eb]"></div>
-                      </div>
-                      <span className="text-[10px] text-[#9ca3af]">produtividade média</span>
-                   </div>
-                </div>
-
-                <div className="w-1/2 bg-white rounded-xl border border-[#e5e5ea] shadow-sm p-6">
-                   <h3 className="text-[14px] font-bold text-[#1d1d1f] mb-6">Qualidade do SDR</h3>
-                   <div className="grid grid-cols-4 gap-4 items-end">
-                      
-                      <div className="flex flex-col gap-2">
-                        <p className="text-[18px] font-bold text-[#1d1d1f]">{(() => { const ag = displayed.reduce((s: any, x: any) => s + (x.agendamentos || 0), 0); const ns = displayed.reduce((s: any, x: any) => s + (x.noShowsNoPeriodo || 0), 0); return ag > 0 ? ((ns / ag) * 100).toFixed(1) : '0'; })()}%</p>
-                        <p className="text-[9px] text-[#86868b] leading-tight font-medium">No-show gerado</p>
-                      </div>
-
-                      <div className="flex flex-col gap-2">
-                        <p className="text-[18px] font-bold text-[#1d1d1f]">{(() => { const ag = displayed.reduce((s: any, x: any) => s + (x.agendamentos || 0), 0); const ns = displayed.reduce((s: any, x: any) => s + (x.noShowsNoPeriodo || 0), 0); return ag > 0 ? (((ag - ns) / ag) * 100).toFixed(1) : '0'; })()}%</p>
-                        <p className="text-[9px] text-[#86868b] leading-tight font-medium">Comparecimento</p>
-                      </div>
-
-                      <div className="flex flex-col gap-2">
-                        <p className="text-[18px] font-bold text-[#1d1d1f]">{displayed.length > 0 ? (displayed.reduce((s: any, r: any) => s + (r.taxaReagendamento || 0), 0) / displayed.length).toFixed(1) : '0'}%</p>
-                        <p className="text-[9px] text-[#86868b] leading-tight font-medium">Taxa de retorno</p>
-                      </div>
-
-                      <div className="flex flex-col gap-2 items-end">
-                        <p className="text-[18px] font-black text-[#d97706]">{displayed.length > 0 ? Math.round(displayed.reduce((s: any, r: any) => s + (r.sdrScoreMedia || 0), 0) / displayed.length) : 0}<span className="text-[10px] text-[#9ca3af]">/100</span></p>
-                        <p className="text-[9px] text-[#86868b] leading-tight font-medium">Score SDR</p>
-                      </div>
-
+                   <div className="flex items-center justify-between border-t border-[#f0f0f5] pt-3 mt-3">
+                      <span className="text-[12px] text-[#374151]">No funil</span>
+                      <div className="bg-[#f3f4f6] text-[#1d1d1f] font-bold rounded px-3 py-1 text-[15px]">{totais?.leadsNoFunil ?? 0}</div>
                    </div>
                 </div>
              </div>
@@ -663,38 +803,59 @@ export default function PerformanceSdrPage() {
           {/* LADO DIREITO (37%) */}
           <div className="w-full lg:w-[37%] flex flex-col gap-6">
              
-             {/* Qualidade do SDR (Top Variant) */}
+             {/* Qualidade do SDR */}
              <div className="bg-white rounded-xl border border-[#e5e5ea] shadow-sm p-6">
-                <h3 className="text-[14px] font-bold text-[#1d1d1f] mb-6">Qualidade do SDR</h3>
-                
-                <div className="grid grid-cols-2 gap-y-6">
-                   <div className="flex items-center gap-10">
-                     <div>
-                       <p className="text-[12px] text-[#86868b] mb-1">No-show gerado</p>
-                       <p className="text-[20px] font-medium text-[#1d1d1f]">{(() => { const ag = displayed.reduce((s: any, x: any) => s + (x.agendamentos || 0), 0); const ns = displayed.reduce((s: any, x: any) => s + (x.noShowsNoPeriodo || 0), 0); return ag > 0 ? ((ns / ag) * 100).toFixed(1) : '0'; })()}%</p>
-                     </div>
-                     <div>
-                       <p className="text-[12px] text-[#86868b] mb-1">Comparecimento</p>
-                       <p className="text-[20px] font-medium text-[#1d1d1f]">{(() => { const ag = displayed.reduce((s: any, x: any) => s + (x.agendamentos || 0), 0); const ns = displayed.reduce((s: any, x: any) => s + (x.noShowsNoPeriodo || 0), 0); return ag > 0 ? (((ag - ns) / ag) * 100).toFixed(1) : '0'; })()}%</p>
-                     </div>
-                   </div>
-                   
-                   <div className="flex flex-col items-end pr-4">
-                     <p className="text-[20px] font-black text-[#d97706]">{displayed.length > 0 ? Math.round(displayed.reduce((s: any, r: any) => s + (r.sdrScoreMedia || 0), 0) / displayed.length) : 0}<span className="text-[12px] text-[#9ca3af]">/100</span></p>
-                     <p className="text-[11px] text-[#86868b] mt-1 hidden">-</p>
-                   </div>
+                <h3 className="text-[14px] font-bold text-[#1d1d1f] mb-5">Qualidade do SDR</h3>
 
-                   <div className="flex items-center gap-10">
-                     <div>
-                       <p className="text-[12px] text-[#86868b] mb-1">Comparecimento</p>
-                       <p className="text-[20px] font-medium text-[#1d1d1f]">{(() => { const r = displayed.reduce((s: any, x: any) => s + (x.reunioes || 0), 0); const ns = displayed.reduce((s: any, x: any) => s + (x.noShowsNoPeriodo || 0), 0); const e = r + ns; return e > 0 ? ((r / e) * 100).toFixed(1) : '0'; })()}%</p>
-                     </div>
-                   </div>
+                <div className="grid grid-cols-2 gap-4">
+                  {/* No-show */}
+                  {(() => {
+                    const ag = displayed.reduce((s: any, x: any) => s + (x.agendamentos || 0), 0);
+                    const ns = displayed.reduce((s: any, x: any) => s + (x.noShowsNoPeriodo || 0), 0);
+                    const val = ag > 0 ? parseFloat(((ns / ag) * 100).toFixed(1)) : 0;
+                    const isOk = val <= 35;
+                    return (
+                      <div className={`rounded-lg p-4 ${isOk ? "bg-[#f0fdf4]" : "bg-[#fef2f2]"}`}>
+                        <p className="text-[11px] text-[#86868b] mb-1">No-show gerado</p>
+                        <p className={`text-[22px] font-bold ${isOk ? "text-[#16A34A]" : "text-[#DC2626]"}`}>{val}%</p>
+                        <p className={`text-[10px] mt-1 ${isOk ? "text-[#16A34A]" : "text-[#DC2626]"}`}>meta ≤ 35%</p>
+                      </div>
+                    );
+                  })()}
 
-                   <div className="flex flex-col items-end pr-2 justify-end">
-                     <p className="text-[12px] text-[#86868b] mb-2 right-4 relative">Score <span className="font-bold">SDR</span></p>
-                     <ScoreArcGauge score={displayed.length > 0 ? Math.round(displayed.reduce((s: any, r: any) => s + (r.sdrScoreMedia || 0), 0) / displayed.length) : 0} />
-                   </div>
+                  {/* Comparecimento */}
+                  {(() => {
+                    const ag = displayed.reduce((s: any, x: any) => s + (x.agendamentos || 0), 0);
+                    const ns = displayed.reduce((s: any, x: any) => s + (x.noShowsNoPeriodo || 0), 0);
+                    const val = ag > 0 ? parseFloat((((ag - ns) / ag) * 100).toFixed(1)) : 0;
+                    const isOk = val >= 65;
+                    return (
+                      <div className={`rounded-lg p-4 ${isOk ? "bg-[#f0fdf4]" : "bg-[#fef2f2]"}`}>
+                        <p className="text-[11px] text-[#86868b] mb-1">Comparecimento</p>
+                        <p className={`text-[22px] font-bold ${isOk ? "text-[#16A34A]" : "text-[#DC2626]"}`}>{val}%</p>
+                        <p className={`text-[10px] mt-1 ${isOk ? "text-[#16A34A]" : "text-[#DC2626]"}`}>meta ≥ 65%</p>
+                      </div>
+                    );
+                  })()}
+
+                  {/* Taxa de retorno */}
+                  <div className="rounded-lg p-4 bg-[#f8f9fa]">
+                    <p className="text-[11px] text-[#86868b] mb-1">Taxa de retorno</p>
+                    <p className="text-[22px] font-bold text-[#1d1d1f]">
+                      {displayed.length > 0 ? (displayed.reduce((s: any, r: any) => s + (r.taxaReagendamento || 0), 0) / displayed.length).toFixed(1) : "0"}%
+                    </p>
+                    <p className="text-[10px] text-[#9ca3af] mt-1">reagendamentos</p>
+                  </div>
+
+                  {/* Score SDR */}
+                  <div className="rounded-lg p-4 bg-[#fffbeb]">
+                    <p className="text-[11px] text-[#86868b] mb-1">Score SDR</p>
+                    <p className="text-[22px] font-bold text-[#d97706]">
+                      {displayed.length > 0 ? Math.round(displayed.reduce((s: any, r: any) => s + (r.sdrScoreMedia || 0), 0) / displayed.length) : 0}
+                      <span className="text-[13px] text-[#9ca3af] font-normal">/100</span>
+                    </p>
+                    <p className="text-[10px] text-[#9ca3af] mt-1">avaliação geral</p>
+                  </div>
                 </div>
              </div>
 
@@ -735,7 +896,7 @@ export default function PerformanceSdrPage() {
                                <td className="py-3 font-semibold text-[#1d1d1f]">{row.agentName}</td>
                                <td className="py-3 text-right pr-4 text-[#374151]">{row.leadsGerados}</td>
                                <td className="py-3 text-right pr-4 text-[#86868b]">{row.leadsNoFunil}</td>
-                               <td className="py-3 text-right pr-4 text-[#86868b]">{row.leadsGerados > 0 ? ((row.agendamentos / row.leadsGerados) * 100).toFixed(1) : '0'}%</td>
+                               {(() => { const val = row.leadsGerados > 0 ? (row.agendamentos / row.leadsGerados) * 100 : 0; return <td className={`py-3 text-right pr-4 font-semibold ${val >= 35 ? "text-[#16A34A]" : "text-[#DC2626]"}`}>{val.toFixed(1)}%</td>; })()}
                                <td className="py-3 text-right pr-4 font-semibold text-[#2563EB]">{row.agendamentos}</td>
                                <td className="py-3 text-center pr-6">
                                  {row.sdrScoreMedia > 0 ? (
@@ -755,117 +916,6 @@ export default function PerformanceSdrPage() {
           </div>
         </div>
 
-        {/* ── METAS: INDIVIDUAL + GERAL ── */}
-        <div className="mt-8 grid grid-cols-1 md:grid-cols-2 gap-5">
-
-          {/* Meta Individual de Agendamentos */}
-          <div className="bg-white rounded-[16px] border border-[#e5e5ea] shadow-[0_2px_12px_rgba(0,0,0,0.03)] p-6">
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="text-[13px] font-bold text-[#1d1d1f] uppercase tracking-wide">Meta Individual · Agendamentos</h3>
-              <span className="text-[11px] text-[#86868b]">{mesLabel(start)}</span>
-            </div>
-
-            {/* Progresso */}
-            {(() => {
-              const myStats = stats.find((r: any) => {
-                if (!userName) return false;
-                const n = userName.toLowerCase();
-                const a = (r.agentName ?? "").toLowerCase();
-                return a.startsWith(n) || n.startsWith(a.split(" ")[0]);
-              });
-              const realizado = myStats?.agendamentos ?? sdrAgend;
-              const pct = metaAgend > 0 ? Math.min(100, Math.round((realizado / metaAgend) * 100)) : 0;
-              const color = pct >= 100 ? "#16a34a" : pct >= 60 ? "#d97706" : "#dc2626";
-              return (
-                <div className="mb-5">
-                  <div className="flex justify-between items-baseline mb-2">
-                    <span className="text-[28px] font-black text-[#1d1d1f] leading-none">{realizado}</span>
-                    <span className="text-[13px] text-[#86868b]">de <strong className="text-[#1d1d1f]">{metaAgend > 0 ? metaAgend : "—"}</strong> agend.</span>
-                  </div>
-                  <div className="w-full h-2.5 bg-[#f0f0f5] rounded-full overflow-hidden">
-                    <div className="h-full rounded-full transition-all duration-700" style={{ width: `${pct}%`, background: color }} />
-                  </div>
-                  <div className="flex justify-between mt-1.5 text-[11px]">
-                    <span style={{ color }}>{pct}% atingido</span>
-                    {metaAgend > 0 && realizado < metaAgend && (
-                      <span className="text-[#86868b]">faltam {metaAgend - realizado}</span>
-                    )}
-                  </div>
-                </div>
-              );
-            })()}
-
-            {/* Input para definir meta */}
-            <div className="flex items-center gap-2 border-t border-[#f0f0f5] pt-4">
-              <label className="text-[12px] text-[#86868b] shrink-0">Minha meta:</label>
-              <input
-                type="number"
-                min={0}
-                value={metaAgendInput}
-                onChange={e => setMetaAgendInput(e.target.value)}
-                placeholder="ex: 30"
-                className="flex-1 border border-[#e5e5ea] rounded-lg px-3 py-1.5 text-[13px] text-[#1d1d1f] focus:outline-none focus:ring-2 focus:ring-[#b49136]"
-              />
-              <button
-                onClick={saveMeta}
-                disabled={savingMeta}
-                className="px-4 py-1.5 rounded-lg text-[12px] font-semibold text-white bg-[#1d1d1f] hover:bg-[#333] transition-colors disabled:opacity-50"
-              >
-                {savingMeta ? "..." : "Salvar"}
-              </button>
-            </div>
-          </div>
-
-          {/* Meta Geral de Vendas */}
-          <div className="bg-white rounded-[16px] border border-[#e5e5ea] shadow-[0_2px_12px_rgba(0,0,0,0.03)] p-6">
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="text-[13px] font-bold text-[#1d1d1f] uppercase tracking-wide">Meta Geral · Vendas do Time</h3>
-              <span className="text-[11px] text-[#86868b]">{metaGeral?.goal?.cycleName ?? "—"}</span>
-            </div>
-            {metaGeral ? (() => {
-              const target = metaGeral.goal?.target ?? 0;
-              const achieved = metaGeral.achieved ?? 0;
-              const pct = target > 0 ? Math.min(100, Math.round((achieved / target) * 100)) : 0;
-              const color = pct >= 100 ? "#16a34a" : pct >= 60 ? "#d97706" : "#dc2626";
-              const fmtM = (v: number) => v >= 1_000_000
-                ? `R$ ${(v/1_000_000).toFixed(2).replace(".", ",")}M`
-                : new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL", maximumFractionDigits: 0 }).format(v);
-              return (
-                <>
-                  <div className="flex justify-between items-baseline mb-2">
-                    <span className="text-[28px] font-black text-[#1d1d1f] leading-none">{fmtM(achieved)}</span>
-                    <span className="text-[13px] text-[#86868b]">meta <strong className="text-[#1d1d1f]">{fmtM(target)}</strong></span>
-                  </div>
-                  <div className="w-full h-2.5 bg-[#f0f0f5] rounded-full overflow-hidden mb-1.5">
-                    <div className="h-full rounded-full transition-all duration-700" style={{ width: `${pct}%`, background: color }} />
-                  </div>
-                  <div className="flex justify-between text-[11px]">
-                    <span style={{ color }}>{pct}% da meta</span>
-                    {achieved < target && (
-                      <span className="text-[#86868b]">faltam {fmtM(target - achieved)}</span>
-                    )}
-                  </div>
-                  <div className="mt-4 grid grid-cols-3 gap-3 border-t border-[#f0f0f5] pt-4">
-                    <div className="text-center">
-                      <p className="text-[10px] text-[#86868b] uppercase tracking-wide mb-1">Vendas</p>
-                      <p className="text-[16px] font-bold text-[#1d1d1f]">{metaGeral.wonCount ?? 0}</p>
-                    </div>
-                    <div className="text-center">
-                      <p className="text-[10px] text-[#86868b] uppercase tracking-wide mb-1">Ticket Médio</p>
-                      <p className="text-[16px] font-bold text-[#1d1d1f]">{metaGeral.wonCount > 0 ? fmtM(achieved / metaGeral.wonCount) : "—"}</p>
-                    </div>
-                    <div className="text-center">
-                      <p className="text-[10px] text-[#86868b] uppercase tracking-wide mb-1">Dias Restantes</p>
-                      <p className="text-[16px] font-bold text-[#1d1d1f]">{metaGeral.daysLeft ?? 0}</p>
-                    </div>
-                  </div>
-                </>
-              );
-            })() : (
-              <p className="text-[13px] text-[#86868b]">Nenhuma meta configurada.</p>
-            )}
-          </div>
-        </div>
 
         {/* ── NOVO BLOCO: GANho E PROGRESSÃO (SDR) ── */}
         <div className="mt-8 bg-[#1d1d1f] rounded-[32px] p-8 shadow-2xl flex flex-col md:flex-row gap-8 relative overflow-hidden">

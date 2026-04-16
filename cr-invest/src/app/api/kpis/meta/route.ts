@@ -1,5 +1,6 @@
-// GET /api/kpis/meta?cycleId=ID
+// GET /api/kpis/meta?cycleId=ID&originSdr=true
 // Returns active goal + achievement + projection
+// originSdr=true → filtra apenas vendas onde sdrName IS NOT NULL (originadas via SDR)
 
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
@@ -11,6 +12,7 @@ export async function GET(req: NextRequest) {
   try {
     const { searchParams } = new URL(req.url);
     const cycleId = searchParams.get("cycleId");
+    const originSdr = searchParams.get("originSdr") === "true";
 
     let goal: {
       id: string;
@@ -51,18 +53,21 @@ export async function GET(req: NextRequest) {
     let achieved = 0;
 
     if (USE_MOCK) {
-      const sales = getMockSales().filter(
+      let sales = getMockSales().filter(
         (s) => s.closedAt >= goal!.startDate && s.closedAt <= goal!.endDate
       );
+      if (originSdr) sales = sales.filter((s) => !!(s as any).sdrName);
       achieved = sales.reduce((sum, s) => sum + s.value, 0);
     } else {
+      const sdrFilter = originSdr ? { NOT: { sdrName: null } } : {};
+      const baseWhere = { closedAt: { gte: goal.startDate, lte: goal.endDate }, ...sdrFilter };
       const [agg, wonCount] = await Promise.all([
         prisma.sale.aggregate({
-          where: { closedAt: { gte: goal.startDate, lte: goal.endDate } },
+          where: baseWhere,
           _sum: { value: true },
         }),
         prisma.sale.count({
-          where: { closedAt: { gte: goal.startDate, lte: goal.endDate } },
+          where: baseWhere,
         }),
       ]);
       achieved = agg._sum.value ?? 0;

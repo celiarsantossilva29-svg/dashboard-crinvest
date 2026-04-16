@@ -419,6 +419,9 @@ async function buildRealResponse(startDate: Date, endDate: Date, now: Date, numD
   // foram transferidos para um closer (assignedTo mudou) ou não há dados GoTo no período.
   const agentNames = sdrVendedores.map((v) => v.nome).filter(Boolean) as string[];
 
+  // Nomes de agentes IA — definido aqui para uso tanto no loop de stats quanto no resumo final
+  const IA_NAMES_SET = new Set(["IA", "Sellmap"]);
+
   const stats: SdrStats[] = agentNames.map((name) => {
     // Match parcial para capturar tanto "Cauê" (cadastro) quanto "Cauê Perpétuo" (Kommo/GoTo)
     const matchName = (field: string | null | undefined) => {
@@ -441,6 +444,7 @@ async function buildRealResponse(startDate: Date, endDate: Date, now: Date, numD
     const recuperacaoMotivoTop = Object.entries(reasonCount).sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
 
     // Speed-to-Lead: usa leads criados no período (mede criação → primeiro contato/ação do SDR)
+    // Filtra apenas amostras ≤ 60 min para excluir leads antigos/parados que inflariam a métrica
     const speedSamples = agentLeadsCreated
       .filter((l) => {
         const firstContact = l.firstCallAt ?? l.firstContactAt ?? l.contactedAt;
@@ -449,13 +453,13 @@ async function buildRealResponse(startDate: Date, endDate: Date, now: Date, numD
       .map((l) => {
         const from = l.arrivalAt ?? l.createdAt;
         const to = l.firstCallAt ?? l.firstContactAt ?? l.contactedAt!;
-        const raw = getBusinessMinutes(from, to);
-        return Math.min(Math.max(raw, 0), 480);
-      });
+        return getBusinessMinutes(from, to);
+      })
+      .filter((raw) => raw >= 0 && raw <= 60);
     const sortedSpeed = [...speedSamples].sort((a, b) => a - b);
     const speedToLeadMin =
       sortedSpeed.length > 0
-        ? parseFloat(sortedSpeed[Math.floor(sortedSpeed.length / 2)].toFixed(0))
+        ? parseFloat(sortedSpeed[Math.floor(sortedSpeed.length / 2)].toFixed(1))
         : 0;
 
     const tentativas =
@@ -486,6 +490,14 @@ async function buildRealResponse(startDate: Date, endDate: Date, now: Date, numD
     );
 
     const agendamentos = agendadosPorMim.length;
+
+    // Agendamentos realizados pela IA em leads que pertencem a este SDR (assignedTo)
+    const agendamentosIa = leadsRows.filter((l) =>
+      IA_NAMES_SET.has(l.scheduledBy ?? "") &&
+      matchName(l.assignedTo) &&
+      l.scheduledAt != null &&
+      l.scheduledAt >= startDate && l.scheduledAt <= endDate
+    ).length;
 
     // Reuniões realizadas dos leads que este SDR agendou
     const reunioes = agendadosPorMim.filter((l) =>
@@ -574,6 +586,7 @@ async function buildRealResponse(startDate: Date, endDate: Date, now: Date, numD
       ligacoesPorDia,
       tarefasVencidas,
       agendamentos,
+      agendamentosIa,
       reunioes,
       agendPorDia,
       agendPorSemana,
@@ -642,7 +655,6 @@ async function buildRealResponse(startDate: Date, endDate: Date, now: Date, numD
   }).sort((a, b) => b.total - a.total);
 
   // ── Origem dos agendamentos (scheduledAt no período — mesma âncora dos SDRs) ──
-  const IA_NAMES_SET = new Set(["IA", "Sellmap"]);
 
   // Total real: todos os leads com scheduledAt no período (independente de scheduledBy)
   const allAgendLeads = leadsRows.filter(l =>

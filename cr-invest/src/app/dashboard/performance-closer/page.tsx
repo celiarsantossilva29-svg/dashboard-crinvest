@@ -459,11 +459,11 @@ export default function PerformanceCloserPage() {
                   </li>
                   <li className="py-4 flex justify-between items-center">
                     <span className="text-[13px] text-[#374151]">Comparecimento</span>
-                    <span className="text-[16px] font-bold text-[#d97706]">{comparecimentoMedio}%</span>
+                    <span className={`text-[16px] font-bold ${comparecimentoMedio >= 65 ? "text-[#16A34A]" : "text-[#DC2626]"}`}>{comparecimentoMedio}%</span>
                   </li>
                   <li className="py-4 flex justify-between items-center">
                     <span className="text-[13px] text-[#374151]">No-Show</span>
-                    <span className="text-[16px] font-bold text-[#1d1d1f]">{displayNoShow}%</span>
+                    <span className={`text-[16px] font-bold ${displayNoShow <= 35 ? "text-[#16A34A]" : "text-[#DC2626]"}`}>{displayNoShow}%</span>
                   </li>
                   <li className="py-4 flex justify-between items-center">
                     <span className="text-[13px] text-[#374151]">Tempo médio de fechamento</span>
@@ -562,9 +562,9 @@ export default function PerformanceCloserPage() {
                                <td className="py-4 font-semibold text-[#1d1d1f]">{row.agentName}</td>
                                <td className="py-4 text-right pr-4 text-[#374151]">{row.totalReunioes}</td>
                                <td className="py-4 text-right pr-4 text-[#374151] font-bold">{row.vendas}</td>
-                               <td className="py-4 text-right pr-4 font-semibold text-[#86868b]">{row.taxaWin}%</td>
+                               <td className={`py-4 text-right pr-4 font-semibold ${row.taxaWin >= 35 ? "text-[#16A34A]" : "text-[#DC2626]"}`}>{row.taxaWin}%</td>
                                <td className="py-4 text-right pr-4 text-[#374151]">{fmtBRL(row.ticketMedio)}</td>
-                               <td className="py-4 text-right pr-6 font-semibold text-[#86868b]">{row.taxaNoShow}%</td>
+                               <td className={`py-4 text-right pr-6 font-semibold ${row.taxaNoShow <= 35 ? "text-[#16A34A]" : "text-[#DC2626]"}`}>{row.taxaNoShow}%</td>
                              </tr>
                              )
                            })
