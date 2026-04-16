@@ -119,7 +119,7 @@ function parseKommoPayload(body: string): {
   });
 
   // Deduplica: add e update podem vir juntos
-  const allUpdates = [...new Set([...addedIds, ...updatedIds])];
+  const allUpdates = Array.from(new Set(addedIds.concat(updatedIds)));
   return { addedIds: allUpdates, updatedIds: allUpdates, deletedIds };
 }
 
@@ -137,7 +137,7 @@ export async function POST(req: NextRequest) {
     const body = await req.text();
     const { addedIds, updatedIds, deletedIds } = parseKommoPayload(body);
 
-    const allChanged = [...new Set([...addedIds, ...updatedIds])];
+    const allChanged = Array.from(new Set(addedIds.concat(updatedIds)));
 
     if (allChanged.length === 0 && deletedIds.length === 0) {
       return NextResponse.json({ ok: true, processed: 0 });
