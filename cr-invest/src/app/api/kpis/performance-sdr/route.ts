@@ -556,7 +556,7 @@ async function buildRealResponse(startDate: Date, endDate: Date, now: Date, numD
     
     // ligacoesPorLead: ligações mapeadas a leads reais / leads únicos contatados
     // Usa LeadCallLog (idempotente, BRT-scoped) para precisão por período.
-    const agentCallLogs = callLogRows.filter(c => {
+    const agentCallLogs = (callLogRows as { agentName: string | null; leadId: string; callCount: number }[]).filter(c => {
       if (!c.agentName || !name) return false;
       const lower = c.agentName?.toLowerCase() ?? "";
       const n = name?.toLowerCase() ?? "";
