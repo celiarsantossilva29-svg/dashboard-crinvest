@@ -142,7 +142,7 @@ function buildMockResponse(startDate: Date, endDate: Date, now: Date, numDays: n
     const leadsNoFunil = agentLeads.filter((l) => !["won", "lost"].includes(l.status)).length;
     
     // Real reagendados: count leads with reagendadoAt set
-    const reagendadosTotal = agentLeads.filter(l => l.reagendadoAt != null).length;
+    const reagendados = agentLeads.filter(l => l.reagendadoAt != null).length;
     // (mock metrics recuperacao removed/replaced with zeros or actuals if we have them)
     const recuperacao = 0; 
     
@@ -176,8 +176,8 @@ function buildMockResponse(startDate: Date, endDate: Date, now: Date, numDays: n
     // Calculate actual Reagendamentos converted
     const reagendadosConvertidos = agentLeads.filter(l => l.reagendadoAt != null && (l.meetingAt != null || l.status === "won")).length;
     const taxaReagendamento =
-      reagendadosTotal > 0
-        ? parseFloat(((reagendadosConvertidos / reagendadosTotal) * 100).toFixed(1))
+      reagendados > 0
+        ? parseFloat(((reagendadosConvertidos / reagendados) * 100).toFixed(1))
         : 0;
 
     // No-show: foi agendado, não compareceu, e não está mais pendente (exclui status "scheduled")
