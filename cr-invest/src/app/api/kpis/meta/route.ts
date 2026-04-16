@@ -1,3 +1,5 @@
+export const dynamic = 'force-dynamic';
+
 // GET /api/kpis/meta?cycleId=ID&originSdr=true
 // Returns active goal + achievement + projection
 // originSdr=true → filtra apenas vendas onde sdrName IS NOT NULL (originadas via SDR)

@@ -1,3 +1,5 @@
+export const dynamic = 'force-dynamic';
+
 // GET /api/auth/kommo/callback — OAuth 2.0 callback handler
 
 import { NextRequest, NextResponse } from "next/server";

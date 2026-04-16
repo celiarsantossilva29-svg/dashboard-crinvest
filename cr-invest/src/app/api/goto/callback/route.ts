@@ -1,3 +1,5 @@
+export const dynamic = 'force-dynamic';
+
 // GET /api/goto/callback — troca o authorization code pelo access + refresh token
 
 import { NextRequest, NextResponse } from "next/server";

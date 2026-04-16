@@ -1,3 +1,5 @@
+export const dynamic = 'force-dynamic';
+
 // GET /api/kommo/auth — redirects to Kommo OAuth consent screen
 
 import { NextRequest, NextResponse } from "next/server";

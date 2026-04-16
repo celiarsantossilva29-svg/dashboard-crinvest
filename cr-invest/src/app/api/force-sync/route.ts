@@ -1,3 +1,5 @@
+export const dynamic = 'force-dynamic';
+
 import { NextResponse } from 'next/server';
 import { syncKommoData, syncLeadHistory } from '@/services/kommo';
 import { syncGoToData } from '@/services/goto';

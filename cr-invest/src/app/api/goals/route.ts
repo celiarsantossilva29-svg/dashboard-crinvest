@@ -1,3 +1,5 @@
+export const dynamic = 'force-dynamic';
+
 // POST /api/goals — creates a Goal in local DB
 // PATCH /api/goals?id=ID — updates target of an existing Goal
 

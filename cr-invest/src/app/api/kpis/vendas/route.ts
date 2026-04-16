@@ -1,3 +1,5 @@
+export const dynamic = 'force-dynamic';
+
 // GET /api/kpis/vendas?start=YYYY-MM-DD&end=YYYY-MM-DD
 
 import { NextRequest, NextResponse } from "next/server";

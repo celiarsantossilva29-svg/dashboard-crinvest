@@ -1,3 +1,5 @@
+export const dynamic = 'force-dynamic';
+
 // GET /api/kommo/lead-history?leadId=xxx
 //
 // Enriquece um lead específico com timestamps de mudança de etapa

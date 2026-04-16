@@ -1,3 +1,5 @@
+export const dynamic = 'force-dynamic';
+
 // GET /api/sales — list sales with installments
 // POST /api/sales — create a Sale
 

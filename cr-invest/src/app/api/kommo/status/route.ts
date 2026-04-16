@@ -1,3 +1,5 @@
+export const dynamic = 'force-dynamic';
+
 // GET /api/kommo/status — retorna se o CRM está conectado e quando foi o último sync
 
 import { NextResponse } from "next/server";

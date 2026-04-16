@@ -1,3 +1,5 @@
+export const dynamic = 'force-dynamic';
+
 // GET /api/kpis/discadores?start=YYYY-MM-DD&end=YYYY-MM-DD&agent=optional
 
 import { NextRequest, NextResponse } from "next/server";
