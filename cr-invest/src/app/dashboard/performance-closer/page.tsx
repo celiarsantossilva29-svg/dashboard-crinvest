@@ -191,7 +191,7 @@ export default function PerformanceCloserPage() {
   const displayTicketMedio = selectedAgent ? selectedAgent.ticketMedio      : (totals?.ticketMedioGeral ?? 0);
   const displayTaxaWin     = selectedAgent ? selectedAgent.taxaWin          : (totals?.taxaWinGeral     ?? 0);
   const displayNoShow      = selectedAgent ? selectedAgent.taxaNoShow       : (totals?.noShowGeral      ?? 0);
-  const displayLeadTime    = selectedAgent ? selectedAgent.leadTimeTotalDias: (totals?.leadTimeMedioGeral ?? 0);
+  const displayLeadTime    = totals?.leadTimeMedioGeral ?? 0;
   const displayVendas      = selectedAgent ? selectedAgent.vendas           : (totals?.totalWon         ?? 0);
 
   const pctAtingidoDaMeta = Math.min(100, Math.round((displayReceita / metaMesVal) * 100));
@@ -206,7 +206,7 @@ export default function PerformanceCloserPage() {
     contatoFuturo: 23,
   };
 
-  const reunioesFeitas      = selectedAgent ? selectedAgent.totalReunioes : crmFunnelTeam.reuniao1;
+  const reunioesFeitas      = crmFunnelTeam.reuniao1;
   const totalVendasPeriodo  = displayVendas;
   // Steps 2 & 3 have no per-agent breakdown in the API — hide them when filtering
   const reunioes2Realizadas = selectedAgent ? 0 : crmFunnelTeam.reuniao2;
