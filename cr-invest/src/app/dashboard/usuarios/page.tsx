@@ -352,7 +352,7 @@ export default function UsuariosPage() {
       silverMin: v.silverMin ?? 0,
       goldMin: v.goldMin ?? 0,
       password: v.password || "",
-      permissions: perms
+      permissions: perms as any
     });
     setActiveTab("equipe");
     window.scrollTo({ top: 0, behavior: 'smooth' });

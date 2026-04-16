@@ -622,7 +622,7 @@ export async function syncKommoData(opts: SyncOptions = {}): Promise<{ synced: n
     });
 
     // Executa todos os upserts da página em uma única transação
-    await prisma.$transaction(upsertOps, { timeout: 30000 });
+    await prisma.$transaction(upsertOps);
     total += items.length;
 
     // ── Enriquecer leads com timestamps de etapa (events API) ──

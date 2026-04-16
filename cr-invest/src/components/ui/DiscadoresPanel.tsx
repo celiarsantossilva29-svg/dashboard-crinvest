@@ -23,6 +23,7 @@ interface DialerMetricsResult {
   avgTalkTimePerCall: number;
   callsBySource: { goto: number };
   dailyCalls?: { date: string; goto: number }[];
+  callsByAgent: AgentDialerStats[];
 }
 
 interface DiscadoresPanelProps {
@@ -52,7 +53,8 @@ function seeded(seed: number, min: number, max: number) {
 
 function buildSparkline(
   daily: { date: string; goto: number }[] | undefined,
-  source: "goto"
+  source: "goto",
+  total: number = 0,
 ): { day: string; v: number }[] {
   if (daily && daily.length >= 7) {
     return daily.slice(-7).map((d, i) => ({ day: DAY_LABELS[i], v: d[source] }));

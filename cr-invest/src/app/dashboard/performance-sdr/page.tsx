@@ -722,7 +722,7 @@ export default function PerformanceSdrPage() {
                 <CartesianGrid vertical={false} stroke="#f0f0f5" strokeDasharray="3 3" />
                 <XAxis dataKey="dia" tick={{ fontSize: 11, fill: "#9ca3af" }} axisLine={false} tickLine={false} dy={10} />
                 <YAxis tick={{ fontSize: 11, fill: "#9ca3af" }} axisLine={false} tickLine={false} dx={-10} />
-                <RechartsTooltip {...TOOLTIP_STYLE} formatter={(v: any, name: string) => [`${Math.round(v)}`, name.includes("Entrada") || name === "leads" ? "Entraram" : "Agendados"]} labelFormatter={(l) => `Dia ${l}`} />
+                <RechartsTooltip {...TOOLTIP_STYLE} formatter={(v: any, name: any) => [`${Math.round(v)}`, String(name).includes("Entrada") || name === "leads" ? "Entraram" : "Agendados"]} labelFormatter={(l) => `Dia ${l}`} />
                 <Legend iconType="circle" wrapperStyle={{ fontSize: 11, color: "#86868b", paddingTop: "5px" }} />
                 <ReferenceLine y={4} stroke="#d97706" strokeWidth={1.5} />
                 <Bar dataKey="leads" fill="#9ca3af" radius={[2, 2, 0, 0]} name='Leads ("Entrada")' />

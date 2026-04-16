@@ -192,7 +192,7 @@ export default function PerformanceCloserPage() {
   const displayTaxaWin     = selectedAgent ? selectedAgent.taxaWin          : (totals?.taxaWinGeral     ?? 0);
   const displayNoShow      = selectedAgent ? selectedAgent.taxaNoShow       : (totals?.noShowGeral      ?? 0);
   const displayLeadTime    = totals?.leadTimeMedioGeral ?? 0;
-  const displayVendas      = selectedAgent ? selectedAgent.vendas           : (totals?.totalWon         ?? 0);
+  const displayVendas      = selectedAgent ? selectedAgent.vendas           : (totals?.vendas           ?? 0);
 
   const pctAtingidoDaMeta = Math.min(100, Math.round((displayReceita / metaMesVal) * 100));
   const faltamReceita = Math.max(0, metaMesVal - displayReceita);
