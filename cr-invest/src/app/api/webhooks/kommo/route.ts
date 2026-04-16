@@ -112,11 +112,11 @@ function parseKommoPayload(body: string): {
   const deletedIds: string[] = [];
 
   // O Kommo envia arrays como: leads[add][0][id]=123&leads[update][0][id]=456
-  for (const [key, value] of params.entries()) {
+  params.forEach((value, key) => {
     if (key.match(/^leads\[(add|status)\]\[\d+\]\[id\]$/)) addedIds.push(value);
     if (key.match(/^leads\[update\]\[\d+\]\[id\]$/)) updatedIds.push(value);
     if (key.match(/^leads\[delete\]\[\d+\]\[id\]$/)) deletedIds.push(value);
-  }
+  });
 
   // Deduplica: add e update podem vir juntos
   const allUpdates = [...new Set([...addedIds, ...updatedIds])];
