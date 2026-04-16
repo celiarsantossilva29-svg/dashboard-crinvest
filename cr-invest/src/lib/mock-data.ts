@@ -83,6 +83,7 @@ export interface MockLead {
   contactedAt: Date | null;
   qualifiedAt: Date | null;
   scheduledAt: Date | null;
+  reagendadoAt: Date | null;
   meetingAt: Date | null;
   closedAt: Date | null;
   status: string;
@@ -110,6 +111,7 @@ export function getMockLeads(): MockLead[] {
     let contactedAt: Date | null = null;
     let qualifiedAt: Date | null = null;
     let scheduledAt: Date | null = null;
+    let reagendadoAt: Date | null = null;
     let meetingAt: Date | null = null;
     let closedAt: Date | null = null;
     let lostReason: string | null = null;
@@ -146,6 +148,7 @@ export function getMockLeads(): MockLead[] {
       contactedAt,
       qualifiedAt,
       scheduledAt,
+      reagendadoAt,
       meetingAt,
       closedAt,
       status,
