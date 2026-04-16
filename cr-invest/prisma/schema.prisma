@@ -49,14 +49,20 @@ model Lead {
   firstContactAt   DateTime?
   contactAttempts  Int       @default(0)
   isReagendado     Boolean   @default(false)
+  reagendadoAt     DateTime?
   nextTaskAt       DateTime?
+  goToCalls        Int       @default(0)
+  firstCallAt      DateTime?
+  leadPhones       String[]  @default([])
   // ── Rastreabilidade Closer
   noShow           Boolean   @default(false)
+  noShowAt         DateTime?          // Data em que o lead entrou em "Reagendamento" (não compareceu)
   sdrScore         Int?
   // ── Pipeline
   contactedAt      DateTime?
   qualifiedAt      DateTime?
   scheduledAt      DateTime?
+  scheduledBy      String?            // SDR que moveu o lead para "1ª Reunião Confirmada"
   meetingAt        DateTime?
   closedAt         DateTime?
   status           String
@@ -233,6 +239,22 @@ model CloserMonthlySummary {
   @@unique([month, closerId])
 }
 
+// ── Log de ligações por lead (GoTo) ─────────────────────────────────────────
+
+model LeadCallLog {
+  id        String   @id @default(cuid())
+  leadId    String
+  agentId   String
+  agentName String
+  source    String   @default("goto")
+  date      DateTime // meia-noite BRT (T03:00:00Z) do dia da ligação
+  callCount Int      @default(0)
+  syncedAt  DateTime @default(now())
+
+  @@unique([leadId, agentId, source, date])
+  @@index([date, source])
+}
+
 // ── Token OAuth GoTo Connect ────────────────────────────────────────────────
 
 model GoToToken {
@@ -252,4 +274,11 @@ model CommissionConfig {
   percentage   Float    @default(0.5) // Ex: 0.5%
   installments Int      @default(12)
   updatedAt    DateTime @updatedAt
+}
+
+
+model AppSetting {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt
 }

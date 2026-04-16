@@ -97,7 +97,7 @@ async function fetchAllCalls(
       accountKey,
       startTime: startDate.toISOString(),
       endTime:   endDate.toISOString(),
-      limit:     "500",
+      pageSize:  "500",
     });
     if (pageToken) params.set("pageToken", pageToken);
 
@@ -167,7 +167,8 @@ export async function syncGoToData(
     throw err;
   }
 
-  // Agrega por agente + dia
+  // Agrega por agente + dia (para DialerMetrics global)
+  // E também mapeia por número de destino para atualizar os Leads locais
   const agg: Record<string, {
     agentId: string;
     agentName: string;
@@ -176,26 +177,52 @@ export async function syncGoToData(
     talkTimeSecs: number;
   }> = {};
 
+  const callCountsByNumber: Record<string, number> = {};
+  const firstCallByNumber: Record<string, Date> = {};
+  // Para LeadCallLog: phone → lista de {date BRT, agentId, agentName}
+  const callsByNumDate: Record<string, Array<{ date: Date; agentId: string; agentName: string }>> = {};
+
   for (const call of calls) {
-    // Agente = ramal interno. caller.number = ramal (1000, 1001, 1002...)
     const agentId   = String(call.caller?.number ?? call.caller?.name ?? "unknown");
-    const agentName = String(call.caller?.name   ?? agentId);
+    let agentName = String(call.caller?.name ?? agentId);
+
+    // Mapeamento explícito de ramais do GoTo para o nome do SDR do Kommo
+    if (agentId === "1000" || agentId === "1002") {
+      agentName = "Cauê Perpétuo"; // Nome exato usado no Kommo
+    }
+
+    // Para identificar qual Lead foi ligado, pegamos o número discado
+    // Em ligações OUTBOUND, o destino fica em callee.number
+    if (call.callee?.number && call.startTime) {
+      const cleanNum = call.callee.number.replace(/\D/g, "");
+      if (cleanNum.length >= 8) {
+        callCountsByNumber[cleanNum] = (callCountsByNumber[cleanNum] ?? 0) + 1;
+        const callTime = new Date(call.startTime);
+        if (!firstCallByNumber[cleanNum] || callTime < firstCallByNumber[cleanNum]) {
+          firstCallByNumber[cleanNum] = callTime;
+        }
+        // LeadCallLog: data no fuso BRT para alinhar com o filtro do dashboard
+        const brtDateStr = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Sao_Paulo" }).format(callTime);
+        if (!callsByNumDate[cleanNum]) callsByNumDate[cleanNum] = [];
+        callsByNumDate[cleanNum].push({ date: new Date(brtDateStr + "T03:00:00Z"), agentId, agentName });
+      }
+    }
 
     if (!call.startTime) continue;
     const dateOnly = new Date(call.startTime.split("T")[0] + "T00:00:00.000Z");
 
-    // Conta apenas chamadas atendidas (answerTime presente)
-    if (!call.answerTime) continue;
-
-    // duration em ms → converte para segundos
-    const talkSecs = Math.round(Number(call.duration ?? 0) / 1000);
-
+    // Conta TODAS as ligações (atendidas + não atendidas) para totalCalls
     const key = `${dateOnly.toISOString()}_${agentId}`;
     if (!agg[key]) {
       agg[key] = { agentId, agentName, date: dateOnly, totalCalls: 0, talkTimeSecs: 0 };
     }
-    agg[key].totalCalls   += 1;
-    agg[key].talkTimeSecs += talkSecs;
+    agg[key].totalCalls += 1;
+
+    // Talk time só para ligações atendidas
+    if (call.answerTime) {
+      const talkSecs = Math.round(Number(call.duration ?? 0) / 1000);
+      agg[key].talkTimeSecs += talkSecs;
+    }
   }
 
   let synced = 0;
@@ -208,11 +235,91 @@ export async function syncGoToData(
     synced++;
   }
 
+  // Atualiza as chamadas diretas por Lead e Data da 1ª Ligação
+  let updatedLeads = 0;
+  const numbersFound = Object.keys(callCountsByNumber);
+  if (numbersFound.length > 0) {
+    // Generate variations to guarantee matches across +55 and local formats
+    const searchVariations = new Set<string>();
+    for (const num of numbersFound) {
+      searchVariations.add(num);
+      if (num.startsWith("55") && num.length > 11) searchVariations.add(num.slice(2));
+      else if (num.length >= 10 && num.length <= 11) searchVariations.add("55" + num);
+      if (num.startsWith("0")) searchVariations.add(num.slice(1));
+    }
+
+    const leadsToUpdate = await prisma.lead.findMany({
+      where: { leadPhones: { hasSome: Array.from(searchVariations) } }
+    });
+
+    // Acumula dados para LeadCallLog: key = "leadId||agentId||dateISO"
+    const leadCallAgg = new Map<string, { leadId: string; agentId: string; agentName: string; date: Date; callCount: number }>();
+
+    for (const lead of leadsToUpdate) {
+      let extraCalls = 0;
+      let earliestCall: Date | null = null;
+
+      for (const p of lead.leadPhones) {
+        // Evaluate all variations of the lead's phone against our GoTo map
+        const pVars = [p, p.startsWith("55") ? p.slice(2) : "55" + p, p.startsWith("0") ? p.slice(1) : p];
+        for (const pv of pVars) {
+          if (callCountsByNumber[pv]) {
+            extraCalls += callCountsByNumber[pv];
+            if (firstCallByNumber[pv]) {
+              if (!earliestCall || firstCallByNumber[pv] < earliestCall) earliestCall = firstCallByNumber[pv];
+            }
+            // Mapeou por uma variação, não conta duplicado das outras variações!
+            delete callCountsByNumber[pv];
+
+            // Coleta chamadas por data/agente para LeadCallLog
+            const numCalls = callsByNumDate[pv];
+            if (numCalls) {
+              for (const c of numCalls) {
+                const aggKey = `${lead.id}||${c.agentId}||${c.date.toISOString()}`;
+                const entry = leadCallAgg.get(aggKey);
+                if (entry) entry.callCount++;
+                else leadCallAgg.set(aggKey, { leadId: lead.id, agentId: c.agentId, agentName: c.agentName, date: c.date, callCount: 1 });
+              }
+              delete callsByNumDate[pv];
+            }
+          }
+        }
+      }
+
+      const updateData: any = {};
+      if (extraCalls > 0) updateData.goToCalls = { increment: extraCalls };
+      if (earliestCall) {
+        if (!lead.firstCallAt || earliestCall < lead.firstCallAt) updateData.firstCallAt = earliestCall;
+      }
+
+      if (Object.keys(updateData).length > 0) {
+        await prisma.lead.update({
+          where: { id: lead.id },
+          data: updateData
+        });
+        updatedLeads++;
+      }
+    }
+
+    // Upsert LeadCallLog em lotes de 50 (paralelo dentro do lote, sem bloquear)
+    const logEntries = Array.from(leadCallAgg.values());
+    for (let i = 0; i < logEntries.length; i += 50) {
+      const chunk = logEntries.slice(i, i + 50);
+      await Promise.all(chunk.map(e =>
+        prisma.leadCallLog.upsert({
+          where: { leadId_agentId_source_date: { leadId: e.leadId, agentId: e.agentId, source: "goto", date: e.date } },
+          update: { callCount: e.callCount, agentName: e.agentName, syncedAt: new Date() },
+          create: { leadId: e.leadId, agentId: e.agentId, agentName: e.agentName, source: "goto", date: e.date, callCount: e.callCount },
+        })
+      ));
+    }
+  }
+
   await prisma.syncLog.create({
     data: {
       source: "goto",
       status: "success",
-      message: `${calls.length} chamadas → ${synced} entradas (${startDate.toISOString().split("T")[0]} → ${endDate.toISOString().split("T")[0]})`,
+      message: `${calls.length} chamadas → ${synced} métricas (${updatedLeads} leads mapeados)`,
     },
   });
 

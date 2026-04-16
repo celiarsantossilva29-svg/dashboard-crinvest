@@ -21,9 +21,8 @@ interface DialerMetricsResult {
   totalCalls: number;
   totalTalkTimeSecs: number;
   avgTalkTimePerCall: number;
-  callsBySource: { goto: number; threec: number };
-  callsByAgent: AgentDialerStats[];
-  dailyCalls?: { date: string; goto: number; threec: number }[];
+  callsBySource: { goto: number };
+  dailyCalls?: { date: string; goto: number }[];
 }
 
 interface DiscadoresPanelProps {
@@ -52,9 +51,8 @@ function seeded(seed: number, min: number, max: number) {
 }
 
 function buildSparkline(
-  daily: { date: string; goto: number; threec: number }[] | undefined,
-  source: "goto" | "threec",
-  total: number
+  daily: { date: string; goto: number }[] | undefined,
+  source: "goto"
 ): { day: string; v: number }[] {
   if (daily && daily.length >= 7) {
     return daily.slice(-7).map((d, i) => ({ day: DAY_LABELS[i], v: d[source] }));
@@ -141,13 +139,9 @@ function SourceCard({
 
 export default function DiscadoresPanel({ data }: DiscadoresPanelProps) {
   const gotoAgents = data.callsByAgent.filter((a) => a.source === "goto");
-  const threecAgents = data.callsByAgent.filter((a) => a.source === "threec");
 
   const gotoTalkTime = gotoAgents.reduce((s, a) => s + a.talkTimeSecs, 0);
-  const threecTalkTime = threecAgents.reduce((s, a) => s + a.talkTimeSecs, 0);
-
   const gotoSpark = buildSparkline(data.dailyCalls, "goto", data.callsBySource.goto);
-  const threecSpark = buildSparkline(data.dailyCalls, "threec", data.callsBySource.threec);
 
   const maxCalls = Math.max(...data.callsByAgent.map((a) => a.totalCalls), 1);
 
@@ -161,7 +155,6 @@ export default function DiscadoresPanel({ data }: DiscadoresPanelProps) {
         </span>
       </div>
 
-      {/* Two source cards */}
       <div className="flex gap-4">
         <SourceCard
           label="GoTo · SDR"
@@ -169,13 +162,6 @@ export default function DiscadoresPanel({ data }: DiscadoresPanelProps) {
           talkTimeSecs={gotoTalkTime}
           color="#2563EB"
           sparkline={gotoSpark}
-        />
-        <SourceCard
-          label="3C Plus · Closer"
-          calls={data.callsBySource.threec}
-          talkTimeSecs={threecTalkTime}
-          color="#16A34A"
-          sparkline={threecSpark}
         />
       </div>
 

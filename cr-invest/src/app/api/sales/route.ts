@@ -57,7 +57,10 @@ export async function POST(req: NextRequest) {
 
   try {
     const body = await req.json();
-    const { value, closedAt, clientName, assignedTo, campaignId, notes, leadId } = body;
+    const { 
+      value, closedAt, clientName, assignedTo, 
+      campaignId, notes, leadId, sdrName, administradora, clienteCpf 
+    } = body;
 
     if (!value || !closedAt || !clientName || !assignedTo) {
       return NextResponse.json(
@@ -100,6 +103,9 @@ export async function POST(req: NextRequest) {
         closedAt: new Date(closedAt),
         clientName: String(clientName),
         assignedTo: String(assignedTo),
+        sdrName: sdrName && sdrName !== "Prospecção direta (Sem SDR)" ? String(sdrName) : null,
+        administradora: administradora ? String(administradora) : null,
+        clienteCpf: clienteCpf ? String(clienteCpf) : null,
         campaignId: campaignId ?? null,
         notes: notes ?? null,
         leadId: leadId ?? null,
@@ -115,3 +121,50 @@ export async function POST(req: NextRequest) {
     );
   }
 }
+
+export async function PUT(req: NextRequest) {
+  const updatedAt = new Date().toISOString();
+
+  try {
+    const body = await req.json();
+    const { 
+      id, value, closedAt, clientName, assignedTo, 
+      campaignId, notes, sdrName, administradora, clienteCpf 
+    } = body;
+
+    if (!id || !value || !closedAt || !clientName || !assignedTo) {
+      return NextResponse.json(
+        { data: null, updatedAt, error: "Campos obrigatórios: id, value, closedAt, clientName, assignedTo" },
+        { status: 400 }
+      );
+    }
+
+    if (USE_MOCK) {
+      return NextResponse.json({ data: { id }, updatedAt, error: null }, { status: 200 });
+    }
+
+    const sale = await prisma.sale.update({
+      where: { id: String(id) },
+      data: {
+        value: Number(value),
+        closedAt: new Date(closedAt),
+        clientName: String(clientName),
+        assignedTo: String(assignedTo),
+        sdrName: sdrName && sdrName !== "Prospecção direta (Sem SDR)" ? String(sdrName) : null,
+        administradora: administradora ? String(administradora) : null,
+        clienteCpf: clienteCpf ? String(clienteCpf) : null,
+        campaignId: campaignId ?? null,
+        notes: notes ?? null,
+      },
+      include: { installments: true },
+    });
+
+    return NextResponse.json({ data: sale, updatedAt, error: null }, { status: 200 });
+  } catch (err: any) {
+    return NextResponse.json(
+      { data: null, updatedAt, error: err?.message ?? "Internal error" },
+      { status: 500 }
+    );
+  }
+}
+

@@ -56,11 +56,17 @@ export async function GET(req: NextRequest) {
       );
       achieved = sales.reduce((sum, s) => sum + s.value, 0);
     } else {
-      const agg = await prisma.sale.aggregate({
-        where: { closedAt: { gte: goal.startDate, lte: goal.endDate } },
-        _sum: { value: true },
-      });
+      const [agg, wonCount] = await Promise.all([
+        prisma.sale.aggregate({
+          where: { closedAt: { gte: goal.startDate, lte: goal.endDate } },
+          _sum: { value: true },
+        }),
+        prisma.sale.count({
+          where: { closedAt: { gte: goal.startDate, lte: goal.endDate } },
+        }),
+      ]);
       achieved = agg._sum.value ?? 0;
+      (goal as any)._wonCount = wonCount;
     }
 
     const now = new Date();
@@ -79,6 +85,7 @@ export async function GET(req: NextRequest) {
       data: {
         goal,
         achieved,
+        wonCount: (goal as any)._wonCount ?? 0,
         percentage: parseFloat(percentage.toFixed(1)),
         projection: parseFloat(projection.toFixed(2)),
         daysLeft,

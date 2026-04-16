@@ -21,40 +21,50 @@ export async function POST(req: Request) {
       permissions, password 
     } = body;
 
-    const vendedor = await (prisma.vendedor as any).upsert({
-      where: { email },
-      update: { 
-        nome, 
-        role, 
-        fixoMensal: Number(fixoMensal),
-        installments: Number(installments),
-        bronzeRate: Number(bronzeRate),
-        silverRate: Number(silverRate),
-        goldRate: Number(goldRate),
-        silverMin: Number(silverMin),
-        goldMin: Number(goldMin),
-        permissions: typeof permissions === "string" ? permissions : JSON.stringify(permissions || {}),
-        password: password || undefined
-      },
-      create: {
-        id: id || `user_${Math.random().toString(36).slice(2, 7)}`,
+    // Se temos um ID, tentamos atualizar por ID para permitir trocar o e-mail
+    if (id) {
+      const updated = await prisma.vendedor.update({
+        where: { id: String(id) },
+        data: {
+          nome,
+          email,
+          role,
+          fixoMensal: Number(fixoMensal) || 0,
+          installments: Number(installments) || 12,
+          bronzeRate: Number(bronzeRate) || 0,
+          silverRate: Number(silverRate) || 0,
+          goldRate: Number(goldRate) || 0,
+          silverMin: Number(silverMin) || 0,
+          goldMin: Number(goldMin) || 0,
+          permissions: typeof permissions === "string" ? permissions : JSON.stringify(permissions || {}),
+          password: password || undefined
+        }
+      });
+      return NextResponse.json({ data: updated });
+    }
+
+    // Se não temos ID, criamos um novo (ou upsert por email se preferir, mas create é mais seguro aqui)
+    const newUser = await prisma.vendedor.create({
+      data: {
+        id: `user_${Math.random().toString(36).slice(2, 7)}`,
         nome,
         email,
         role,
-        fixoMensal: Number(fixoMensal),
-        installments: Number(installments),
-        bronzeRate: Number(bronzeRate),
-        silverRate: Number(silverRate),
-        goldRate: Number(goldRate),
-        silverMin: Number(silverMin),
-        goldMin: Number(goldMin),
+        fixoMensal: Number(fixoMensal) || 0,
+        installments: Number(installments) || 12,
+        bronzeRate: Number(bronzeRate) || 0,
+        silverRate: Number(silverRate) || 0,
+        goldRate: Number(goldRate) || 0,
+        silverMin: Number(silverMin) || 0,
+        goldMin: Number(goldMin) || 0,
         permissions: typeof permissions === "string" ? permissions : JSON.stringify(permissions || {}),
         password: password || "mudar123"
       },
     });
 
-    return NextResponse.json({ data: vendedor });
+    return NextResponse.json({ data: newUser });
   } catch (error: any) {
+    console.error("Erro na API de vendedores:", error);
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }

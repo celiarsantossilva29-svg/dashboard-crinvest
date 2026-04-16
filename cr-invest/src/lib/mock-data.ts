@@ -91,6 +91,8 @@ export interface MockLead {
   assignedTo: string;
   interactionCount: number;
   syncedAt: Date;
+  noShow: boolean;
+  isReagendado: boolean;
 }
 
 export function getMockLeads(): MockLead[] {
@@ -152,6 +154,8 @@ export function getMockLeads(): MockLead[] {
       assignedTo: agent.name,
       interactionCount: seededNum(i * 43, 1, 12),
       syncedAt: NOW,
+      noShow: ["scheduled", "meeting", "won", "lost"].includes(status) && i % 4 === 0,
+      isReagendado: ["scheduled", "meeting", "won", "lost"].includes(status) && i % 4 === 0,
     });
   }
 

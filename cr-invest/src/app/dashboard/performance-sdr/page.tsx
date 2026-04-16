@@ -2,16 +2,24 @@
 
 import React, { useState, useEffect, useCallback } from "react";
 import {
-  LineChart, Line, XAxis, YAxis, ReferenceLine, ResponsiveContainer, Tooltip as RechartsTooltip, CartesianGrid, AreaChart, Area
+  LineChart, Line, BarChart, Bar, Legend, XAxis, YAxis, ReferenceLine, ResponsiveContainer, Tooltip as RechartsTooltip, CartesianGrid, AreaChart, Area
 } from "recharts";
 import { Medal, Zap, Target } from "lucide-react";
+import { useSession } from "next-auth/react";
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
 function isoDate(d: Date) { return d.toISOString().split("T")[0]; }
 function getMonthRange() {
-  // Fixado para Março 2026 de demonstração 
-  return { start: "2026-03-01", end: "2026-03-31" };
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = now.getMonth() + 1;
+  const lastDay = new Date(year, month, 0).getDate();
+  const mm = month < 10 ? `0${month}` : month;
+  return { 
+    start: `${year}-${mm}-01`, 
+    end: `${year}-${mm}-${lastDay < 10 ? `0${lastDay}` : lastDay}` 
+  };
 }
 function fmtTime(s: number) {
   const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
@@ -28,22 +36,38 @@ function fmtBRL(v: number) {
 
 // ─── inline components ───────────────────────────────────────────────────────
 
-function SpeedArcGauge() {
-  // A clean replica of the speed-to-lead gauge
+function SpeedArcGauge({ value = 0 }: { value?: number }) {
+  const meta = 20;
+  // Se for maior que 60 min, trava no cap para não quebrar a UI
+  const cappedValue = Math.min(value, 60); 
+  const hasData = value > 0;
+  
+  // Math for the arc: total length of a half circle is ~188 (PI * R, where R is 60).
+  const circumference = Math.PI * 60;
+  // If value is 0-20 min, it should be green. 20-40 min yellow. >40 min red.
+  // For the offset (0 is empty, circumference is full).
+  // Let's assume max scale is 60 min (circumference = 60). So 1 min = circumference / 60
+  const dashoffset = circumference - (cappedValue / 60) * circumference;
+  
+  let color = "#d97706"; // Default orange (warning)
+  if (!hasData) color = "#d1d5db"; // Gray if no data
+  else if (value <= 20) color = "#10b981"; // Green (good)
+  else if (value > 40) color = "#ef4444"; // Red (bad)
+
   return (
     <div className="relative flex flex-col items-center justify-center w-full h-[80px]">
       <svg width="140" height="70" viewBox="0 0 140 70" className="overflow-visible">
         {/* Track */}
         <path d="M 10 70 A 60 60 0 0 1 130 70" fill="none" stroke="#f0f0f5" strokeWidth="12" strokeLinecap="round" />
-        {/* Filled part (simulate "sem dados" or small value by using a tiny orange dot at start) */}
-        <path d="M 10 70 A 60 60 0 0 1 12 70" fill="none" stroke="#d97706" strokeWidth="12" strokeLinecap="round" />
-        {/* Needle indicator for 'meta: 20min' -> roughly at 12 o'clock center */}
-        <line x1="70" y1="18" x2="70" y2="28" stroke="#d97706" strokeWidth="2" />
+        {/* Filled part */}
+        <path d="M 10 70 A 60 60 0 0 1 130 70" fill="none" stroke={color} strokeWidth="12" strokeLinecap="round" strokeDasharray={circumference} strokeDashoffset={hasData ? dashoffset : circumference - 1} style={{ transition: 'stroke-dashoffset 0.5s ease-in-out' }} />
+        {/* Needle indicator for 'meta: 20min' -> roughly at 12 o'clock center (assuming 30 min is center, 20 min is 1/3) */}
+        <line x1="55" y1="18" x2="62" y2="28" stroke="#d97706" strokeWidth="2" style={{ transform: 'rotate(-10deg)', transformOrigin: 'center' }} />
         <rect x="52" y="32" width="36" height="2" fill="#d1d5db" rx="1" />
       </svg>
       <div className="absolute bottom-2 text-center">
         <p className="text-[10px] text-[#9ca3af]">meta: 20min</p>
-        <p className="text-[11px] font-medium text-[#1d1d1f]">Sem dados</p>
+        <p className="text-[11px] font-medium text-[#1d1d1f]">{hasData ? `${Math.round(value)}m` : "Sem dados"}</p>
       </div>
     </div>
   );
@@ -72,47 +96,149 @@ const TOOLTIP_STYLE = {
 // ─── page ────────────────────────────────────────────────────────────────────
 
 export default function PerformanceSdrPage() {
-  const { start: ds, end: de } = getMonthRange();
-  const [start, setStart] = useState(ds);
-  const [end, setEnd] = useState(de);
+  const [start, setStart] = useState<string>("");
+  const [end, setEnd] = useState<string>("");
+  const [selectedAgent, setSelectedAgent] = useState<string | null>(null);
+  const [isInitialized, setIsInitialized] = useState(false);
+  
   const [apiData, setApiData] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
-  const [selectedAgent, setSelectedAgent] = useState<string | null>(null);
   const [sales, setSales] = useState<any[]>([]);
+  const [metaGeral, setMetaGeral] = useState<any>(null);
+  const [metaAgend, setMetaAgend] = useState<number>(0);
+  const [metaAgendInput, setMetaAgendInput] = useState<string>("");
+  const [savingMeta, setSavingMeta] = useState(false);
+  const { data: session } = useSession();
+
+  // Scope enforcement
+  const userRole = (session?.user as any)?.role;
+  const userName = session?.user?.name;
+  const isAdmin = userRole === "admin";
+  const permsRaw = (session?.user as any)?.permissions;
+  let scopeLocked = false;
+  if (!isAdmin && permsRaw) {
+    try {
+      const perms = typeof permsRaw === "string" ? JSON.parse(permsRaw) : permsRaw;
+      const sdrPerm = perms["PERF_SDR"] || perms["DASHBOARD"];
+      if (sdrPerm?.scope === "own" && userName) {
+        scopeLocked = true;
+      }
+    } catch(e) {}
+  }
+
+  useEffect(() => {
+    if (scopeLocked && userName && selectedAgent !== userName) {
+      setSelectedAgent(userName);
+    }
+  }, [scopeLocked, userName, selectedAgent]);
+
+  // Load initial state from localStorage
+  useEffect(() => {
+    const savedStart = localStorage.getItem("perf-sdr-start");
+    const savedEnd = localStorage.getItem("perf-sdr-end");
+    const savedAgent = localStorage.getItem("perf-sdr-agent");
+    
+    if (savedStart && savedEnd) {
+      setStart(savedStart);
+      setEnd(savedEnd);
+    } else {
+      const { start: ds, end: de } = getMonthRange();
+      setStart(ds);
+      setEnd(de);
+    }
+    
+    if (savedAgent) setSelectedAgent(savedAgent === "null" ? null : savedAgent);
+    setIsInitialized(true);
+  }, []);
+
+  const userId = (session?.user as any)?.id;
+
+  // Carrega meta individual do SDR ao montar ou quando userId muda
+  useEffect(() => {
+    if (!userId || userId === "admin") return;
+    fetch(`/api/settings?key=sdr_meta_agend_${userId}`)
+      .then(r => r.json())
+      .then(j => {
+        const v = parseInt(j.data ?? "0") || 0;
+        setMetaAgend(v);
+        setMetaAgendInput(v > 0 ? String(v) : "");
+      })
+      .catch(() => {});
+  }, [userId]);
+
+  const saveMeta = async () => {
+    if (!userId || userId === "admin") return;
+    const v = parseInt(metaAgendInput) || 0;
+    setSavingMeta(true);
+    try {
+      await fetch("/api/settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key: `sdr_meta_agend_${userId}`, value: String(v) }),
+      });
+      setMetaAgend(v);
+    } finally {
+      setSavingMeta(false);
+    }
+  };
 
   const fetchData = useCallback(async () => {
+    if (!isInitialized || !start || !end) return;
     setError(null);
     try {
-      const res = await fetch(`/api/kpis/performance-sdr?start=${start}&end=${end}`);
-      const json = await res.json();
-      
-      const resSales = await fetch(`/api/sales?start=${start}&end=${end}`);
-      const jsonSales = await resSales.json();
+      const [res, resSales, resMeta] = await Promise.all([
+        fetch(`/api/kpis/performance-sdr?start=${start}&end=${end}`),
+        fetch(`/api/sales?start=${start}&end=${end}`),
+        fetch("/api/kpis/meta"),
+      ]);
+      const [json, jsonSales, jsonMeta] = await Promise.all([
+        res.json(), resSales.json(), resMeta.json(),
+      ]);
 
       if (json.error) throw new Error(json.error);
       setApiData(json.data);
       setSales(jsonSales.data || []);
-    } catch (e: any) { setError(e.message); }
-  }, [start, end]);
+      if (jsonMeta.data) setMetaGeral(jsonMeta.data);
+      
+      // Persist values
+      localStorage.setItem("perf-sdr-start", start);
+      localStorage.setItem("perf-sdr-end", end);
+      localStorage.setItem("perf-sdr-agent", String(selectedAgent));
+    } catch (e: any) { 
+      setError(e.message); 
+      setApiData(null); 
+      setSales([]); 
+    }
+  }, [start, end, selectedAgent, isInitialized]);
 
-  useEffect(() => { fetchData(); }, [fetchData]);
+  useEffect(() => { 
+    if (isInitialized) fetchData(); 
+  }, [fetchData, isInitialized]);
 
   const stats = apiData?.stats ?? [];
   const totais = apiData?.totais;
   
   // Fill daily leads array to always have 30 days for visual structure
   const dailyLeadsRaw = apiData?.dailyLeads ?? [];
-  const mockDailyLeads = Array.from({length: 30}).map((_, i) => {
-    const existing = dailyLeadsRaw.find((d: any) => d.dia === i + 1);
-    return existing || { dia: i + 1, leads: Math.floor(Math.random() * 3) + (i/10) }; 
-  });
+  const mockDailyLeads = dailyLeadsRaw.length > 0 ? dailyLeadsRaw : Array.from({length: 30}).map((_, i) => ({
+    dia: i + 1, leads: 0, agendamentos: 0
+  }));
   const dailyAvg = totais ? parseFloat((totais.leadsGerados / Math.max(dailyLeadsRaw.length, 1)).toFixed(1)) : 0;
   
   const displayed = selectedAgent ? stats.filter((r: any) => r.agentName === selectedAgent) : stats;
 
+  // Total de agendamentos:
+  // - sem filtro: usa o total real (todos scheduledAt no período, qualquer scheduledBy)
+  // - com filtro de agente: usa os agendamentos daquele SDR
+  const sdrAgend = displayed.reduce((s: number, r: any) => s + (r.agendamentos || 0), 0);
+  const iaAgend   = !selectedAgent ? (apiData?.agendamentosPorOrigem?.ia?.agendamentos    ?? 0) : 0;
+  const totalAgendamentos = !selectedAgent
+    ? (apiData?.agendamentosPorOrigem?.total ?? sdrAgend)
+    : sdrAgend;
+
   // ── GAMIFICAÇÃO E PROJEÇÃO (SDR) ──
   const sdrSales = selectedAgent 
-    ? sales.filter(s => s.sdrName === selectedAgent)
+    ? sales.filter(s => s.sdrName && selectedAgent.toLowerCase().includes(s.sdrName.trim().toLowerCase()))
     : sales.filter(s => s.sdrName); // Pega todas as vendas que tiveram envolvimento de algum SDR
 
   const totalVendido = sdrSales.reduce((acc, s) => acc + s.value, 0);
@@ -180,11 +306,18 @@ export default function PerformanceSdrPage() {
 
           <div className="flex items-center gap-3">
             <select
-              value={selectedAgent ?? ""} onChange={(e) => setSelectedAgent(e.target.value || null)}
-              className="border border-[#e5e5ea] rounded-md px-3 py-1.5 text-[13px] bg-white text-[#1d1d1f] hover:border-[#d1d1d6] outline-none transition-colors"
+              value={selectedAgent ?? ""} onChange={(e) => { if (!scopeLocked) setSelectedAgent(e.target.value || null); }}
+              disabled={scopeLocked}
+              className={`border border-[#e5e5ea] rounded-md px-3 py-1.5 text-[13px] bg-white text-[#1d1d1f] hover:border-[#d1d1d6] outline-none transition-colors ${scopeLocked ? 'opacity-60 cursor-not-allowed' : ''}`}
             >
-              <option value="">Todos os SDRs</option>
-              {stats.map((r: any) => <option key={r.agentName} value={r.agentName}>{r.agentName}</option>)}
+              {scopeLocked ? (
+                <option value={userName || ""}>{userName}</option>
+              ) : (
+                <>
+                  <option value="">Todos os SDRs</option>
+                  {stats.map((r: any) => <option key={r.agentName} value={r.agentName}>{r.agentName}</option>)}
+                </>
+              )}
             </select>
 
             <div className="flex items-center border border-[#e5e5ea] rounded-md bg-white overflow-hidden text-[13px]">
@@ -216,21 +349,42 @@ export default function PerformanceSdrPage() {
           <div className="bg-white rounded-xl border border-[#e5e5ea] shadow-sm flex items-stretch divide-x divide-[#f0f0f5]">
             
             <div className="flex-1 p-6">
-              <p className="text-[11px] font-semibold text-[#86868b] uppercase tracking-widest mb-3">Leads no Funil</p>
-              <p className="text-[32px] font-black leading-none text-[#1d1d1f] tracking-tight">{totais?.leadsNoFunil ?? 0}</p>
-              <p className="text-[12px] text-[#86868b] mt-2">{totais?.leadsGerados ?? 0} gerados</p>
+              <p className="text-[11px] font-semibold text-[#86868b] uppercase tracking-widest mb-3">Leads Gerados</p>
+              <p className="text-[32px] font-black leading-none text-[#1d1d1f] tracking-tight">{totais?.leadsGerados ?? 0}</p>
+              <p className="text-[12px] text-[#86868b] mt-2">{totais?.leadsNoFunil ?? 0} no funil</p>
             </div>
-            
+
             <div className="flex-1 p-6">
-              <p className="text-[11px] font-semibold text-[#86868b] uppercase tracking-widest mb-3">Tarefas Atrasadas</p>
-              <p className="text-[32px] font-black leading-none text-[#1d1d1f] tracking-tight">{totais?.tarefasVencidas ?? 0}</p>
-              <p className="text-[12px] text-[#86868b] mt-2">nextTask vencida</p>
+              <p className="text-[11px] font-semibold text-[#86868b] uppercase tracking-widest mb-3">Agendamentos</p>
+              <p className="text-[32px] font-black leading-none text-[#2563EB] tracking-tight">{totalAgendamentos}</p>
+              <p className="text-[12px] text-[#86868b] mt-2">
+                {(totais?.leadsGerados ?? 0) > 0
+                  ? ((totalAgendamentos / totais!.leadsGerados) * 100).toFixed(1)
+                  : "0"}% conversão geral
+                {iaAgend > 0 && <span className="ml-1 text-[#86868b]">· {iaAgend} IA</span>}
+              </p>
             </div>
 
             <div className="flex-1 p-6">
               <p className="text-[11px] font-semibold text-[#86868b] uppercase tracking-widest mb-3">Reagendados</p>
-              <p className="text-[32px] font-black leading-none text-[#1d1d1f] tracking-tight">{totais?.reagendados ?? 0}</p>
+              <p className="text-[32px] font-black leading-none text-[#F59E0B] tracking-tight">{totais?.reagendados ?? 0}</p>
               <p className="text-[12px] text-[#86868b] mt-2">leads com reagendamento</p>
+            </div>
+
+            <div className="flex-1 p-6">
+              <p className="text-[11px] font-semibold text-[#86868b] uppercase tracking-widest mb-3">Reuniões</p>
+              <p className="text-[32px] font-black leading-none text-[#10B981] tracking-tight">{displayed.reduce((s: any, r: any) => s + (r.reunioes || 0), 0)}</p>
+              <p className="text-[12px] text-[#86868b] mt-2">
+                {totalAgendamentos > 0
+                  ? ((displayed.reduce((s: any, r: any) => s + (r.reunioes || 0), 0) / totalAgendamentos) * 100).toFixed(1)
+                  : "0"}% realizadas
+              </p>
+            </div>
+
+            <div className="flex-1 p-6">
+              <p className="text-[11px] font-semibold text-[#DC2626] uppercase tracking-widest mb-3">Tarefas Atrasadas</p>
+              <p className="text-[32px] font-black leading-none text-[#DC2626] tracking-tight">{totais?.tarefasVencidas ?? 0}</p>
+              <p className="text-[12px] text-[#DC2626]/60 mt-2">nextTask vencida</p>
             </div>
 
             <div className="flex-1 p-6">
@@ -242,6 +396,90 @@ export default function PerformanceSdrPage() {
           </div>
         </div>
 
+        {/* ── ORIGEM DOS AGENDAMENTOS ─────────────────────────────────────── */}
+        {apiData?.agendamentosPorOrigem && (
+          <div className="bg-white rounded-xl border border-[#e5e5ea] shadow-sm p-6 mb-8">
+            <h2 className="text-[11px] font-semibold text-[#86868b] uppercase tracking-wider mb-4">Origem dos Agendamentos</h2>
+
+            {(() => {
+              const ia    = apiData.agendamentosPorOrigem.ia ?? { agendamentos: 0, noShows: 0, taxaNoShow: 0 };
+              const other = apiData.agendamentosPorOrigem.other ?? { agendamentos: 0, noShows: 0, taxaNoShow: 0 };
+              const sdrStats: any[] = stats;
+              const cols = 1 + sdrStats.length + (other.agendamentos > 0 ? 1 : 0);
+              const gridCols = cols <= 2 ? "grid-cols-2" : cols === 3 ? "grid-cols-3" : "grid-cols-4";
+
+              const PanelCard = ({ label, avatar, bg, agendamentos, noShows, taxaNoShow, highlight }: any) => {
+                const nsColor = taxaNoShow > 30 ? "text-[#dc2626]" : taxaNoShow > 15 ? "text-[#eab308]" : "text-[#16a34a]";
+                return (
+                  <div className={`rounded-[10px] border p-4 ${highlight ? "border-[#b49136] bg-[#fffbeb]" : "border-[#f0f0f5] bg-[#fafafa]"}`}>
+                    <div className="flex items-center gap-2 mb-4">
+                      <div className={`w-6 h-6 rounded-full flex items-center justify-center text-white text-[10px] font-bold ${bg}`}>{avatar}</div>
+                      <span className="font-semibold text-[12px] text-[#1d1d1f] truncate">{label}</span>
+                    </div>
+                    <div className="space-y-2">
+                      <div className="flex justify-between items-center">
+                        <span className="text-[11px] text-[#86868b]">Agendamentos</span>
+                        <span className="font-black text-[18px] text-[#1d1d1f] leading-none">{agendamentos}</span>
+                      </div>
+                      <div className="flex justify-between items-center">
+                        <span className="text-[11px] text-[#86868b]">No-shows</span>
+                        <span className="font-bold text-[14px] text-[#1d1d1f]">{noShows}</span>
+                      </div>
+                      <div className="flex justify-between items-center pt-1 border-t border-[#f0f0f5]">
+                        <span className="text-[11px] text-[#86868b]">Taxa no-show</span>
+                        <span className={`font-black text-[16px] ${nsColor}`}>{taxaNoShow.toFixed(1)}%</span>
+                      </div>
+                    </div>
+                  </div>
+                );
+              };
+
+              const totalAgend = apiData.agendamentosPorOrigem.total ?? (ia.agendamentos + sdrStats.reduce((s: number, r: any) => s + (r.agendamentos || 0), 0) + other.agendamentos);
+
+              return (
+                <>
+                  <div className={`grid ${gridCols} gap-4 mb-5`}>
+                    <PanelCard label="IA (Automático)" avatar="IA" bg="bg-[#1d1d1f]" agendamentos={ia.agendamentos} noShows={ia.noShows} taxaNoShow={ia.taxaNoShow} highlight={false} />
+                    {sdrStats.map((sdr: any) => (
+                      <PanelCard
+                        key={sdr.agentName}
+                        label={sdr.agentName}
+                        avatar={sdr.agentName.charAt(0).toUpperCase()}
+                        bg="bg-[#b49136]"
+                        agendamentos={sdr.agendamentos}
+                        noShows={sdr.noShowsNoPeriodo ?? 0}
+                        taxaNoShow={sdr.taxaNoShow ?? 0}
+                        highlight={selectedAgent === sdr.agentName}
+                      />
+                    ))}
+                    {other.agendamentos > 0 && (
+                      <PanelCard label="Outros" avatar="?" bg="bg-[#9ca3af]" agendamentos={other.agendamentos} noShows={other.noShows} taxaNoShow={other.taxaNoShow} highlight={false} />
+                    )}
+                  </div>
+                  {totalAgend > 0 && (
+                    <div>
+                      <div className="flex justify-between text-[10px] text-[#86868b] mb-1">
+                        <span>IA {((ia.agendamentos / totalAgend) * 100).toFixed(0)}%</span>
+                        <span className="font-semibold text-[#1d1d1f]">{totalAgend} total</span>
+                        <span>SDR {((sdrStats.reduce((s: number, r: any) => s + (r.agendamentos || 0), 0) / totalAgend) * 100).toFixed(0)}%</span>
+                      </div>
+                      <div className="h-2 rounded-full bg-[#f0f0f5] overflow-hidden flex">
+                        <div className="h-full bg-[#1d1d1f]" style={{ width: `${(ia.agendamentos / totalAgend) * 100}%` }} />
+                        {sdrStats.map((sdr: any, i: number) => (
+                          <div key={sdr.agentName} className="h-full bg-[#b49136]" style={{ width: `${((sdr.agendamentos || 0) / totalAgend) * 100}%`, opacity: 1 - i * 0.25 }} />
+                        ))}
+                        {other.agendamentos > 0 && (
+                          <div className="h-full bg-[#d1d5db] rounded-r-full" style={{ width: `${(other.agendamentos / totalAgend) * 100}%` }} />
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </>
+              );
+            })()}
+          </div>
+        )}
+
         {/* ── ESFORÇO OPERACIONAL ─────────────────────────────────────────── */}
         <div className="mb-8">
           <h2 className="text-[11px] font-semibold text-[#86868b] uppercase tracking-wider mb-2">Esforço Operacional</h2>
@@ -249,25 +487,36 @@ export default function PerformanceSdrPage() {
             
             <div className="flex-1 p-6 flex flex-col justify-between">
               <p className="text-[11px] font-semibold text-[#86868b] uppercase tracking-widest text-center mb-1">Speed-to-Lead</p>
-              <SpeedArcGauge />
+              <SpeedArcGauge value={displayed.length > 0 ? displayed.reduce((s: any, r: any) => s + r.speedToLeadMin, 0) / displayed.length : 0} />
             </div>
             
-            <div className="flex-1 p-6 flex flex-col justify-center">
-              <p className="text-[11px] font-semibold text-[#86868b] uppercase tracking-widest mb-3">Intensidade (Lig./Lead)</p>
-              <p className="text-[32px] font-black leading-none text-[#1d1d1f] tracking-tight">{(totais?.ligacoesPorLeadMedio ?? 0).toFixed(1)}</p>
-              <p className="text-[12px] text-[#86868b] mt-2">média de ligações por lead</p>
+            <div className="flex-1 p-6 flex flex-col justify-center gap-4">
+              <div>
+                <p className="text-[11px] font-semibold text-[#86868b] uppercase tracking-widest mb-1">Lig. / Lead</p>
+                <p className="text-[28px] font-black leading-none text-[#1d1d1f] tracking-tight">{(totais?.ligacoesPorLeadMedio ?? 0).toFixed(1)}</p>
+                <p className="text-[11px] text-[#86868b] mt-1">ligações por lead</p>
+              </div>
+              <div className="border-t border-[#f0f0f5] pt-4">
+                <p className="text-[11px] font-semibold text-[#86868b] uppercase tracking-widest mb-1">Lig. / Dia útil</p>
+                <p className="text-[28px] font-black leading-none text-[#1d1d1f] tracking-tight">{(totais?.ligacoesPorDiaMedio ?? 0).toFixed(1)}</p>
+                <p className="text-[11px] text-[#86868b] mt-1">ligações por dia útil</p>
+              </div>
             </div>
 
             <div className="flex-1 p-6 flex flex-col justify-center">
               <p className="text-[11px] font-semibold text-[#86868b] uppercase tracking-widest mb-3">Agenda, por dia</p>
-              <p className="text-[32px] font-black leading-none text-[#1d1d1f] tracking-tight">{Math.round(totais?.agendPorDiaMedio ?? 0)}</p>
-              <p className="text-[12px] text-[#86868b] mt-2">produtividade diária média</p>
+              <p className="text-[32px] font-black leading-none text-[#1d1d1f] tracking-tight">{(totais?.agendPorDiaMedio ?? 0).toFixed(1)}</p>
+              <p className="text-[12px] text-[#86868b] mt-2">agendamentos por dia</p>
             </div>
 
             <div className="flex-1 p-6 flex flex-col justify-center">
-              <p className="text-[11px] font-semibold text-[#86868b] uppercase tracking-widest mb-3">No-Show Médio</p>
+              <p className="text-[11px] font-semibold text-[#86868b] uppercase tracking-widest mb-3">No-Show</p>
               <p className="text-[32px] font-black leading-none text-[#1d1d1f] tracking-tight">
-                {stats.length > 0 ? parseFloat((stats.reduce((s: any, r: any) => s + r.taxaNoShow, 0) / stats.length).toFixed(1)) : 0}%
+                {(() => {
+                  const totalAgend = displayed.reduce((s: any, r: any) => s + (r.agendamentos || 0), 0);
+                  const totalNoShows = displayed.reduce((s: any, r: any) => s + (r.noShowsNoPeriodo || 0), 0);
+                  return totalAgend > 0 ? ((totalNoShows / totalAgend) * 100).toFixed(1) : "0";
+                })()}%
               </p>
               <p className="text-[12px] text-[#86868b] mt-2">reuniões com ausência</p>
             </div>
@@ -281,20 +530,22 @@ export default function PerformanceSdrPage() {
              <h2 className="text-[11px] font-semibold text-[#86868b] uppercase tracking-wider">Evolução Diária – Agendamentos</h2>
              <div className="flex items-center gap-2">
                 <div className="w-12 h-0.5 bg-[#d97706] rounded-full"></div>
-                <span className="text-[11px] font-bold text-[#86868b]">Meta: 9/dia</span>
+                <span className="text-[11px] font-bold text-[#86868b]">Meta: 4/dia</span>
              </div>
           </div>
           
           <div className="bg-white rounded-xl border border-[#e5e5ea] shadow-sm h-[200px] p-4 pt-8">
             <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={mockDailyLeads} margin={{ top: 10, right: 20, left: -20, bottom: 0 }}>
+              <BarChart data={mockDailyLeads} margin={{ top: 10, right: 20, left: -20, bottom: 0 }}>
                 <CartesianGrid vertical={false} stroke="#f0f0f5" strokeDasharray="3 3" />
                 <XAxis dataKey="dia" tick={{ fontSize: 11, fill: "#9ca3af" }} axisLine={false} tickLine={false} dy={10} />
                 <YAxis tick={{ fontSize: 11, fill: "#9ca3af" }} axisLine={false} tickLine={false} dx={-10} />
-                <RechartsTooltip {...TOOLTIP_STYLE} formatter={(v: any) => [`${Math.round(v)} leads`]} labelFormatter={(l) => `Dia ${l}`} />
-                <ReferenceLine y={9} stroke="#d97706" strokeWidth={1.5} />
-                <Line type="monotone" dataKey="leads" stroke="#2563EB" strokeWidth={2.5} dot={{ r: 3, fill: "#2563EB", strokeWidth: 0 }} activeDot={{ r: 5, fill: "#1e40af" }} />
-              </LineChart>
+                <RechartsTooltip {...TOOLTIP_STYLE} formatter={(v: any, name: string) => [`${Math.round(v)}`, name.includes("Entrada") || name === "leads" ? "Entraram" : "Agendados"]} labelFormatter={(l) => `Dia ${l}`} />
+                <Legend iconType="circle" wrapperStyle={{ fontSize: 11, color: "#86868b", paddingTop: "5px" }} />
+                <ReferenceLine y={4} stroke="#d97706" strokeWidth={1.5} />
+                <Bar dataKey="leads" fill="#9ca3af" radius={[2, 2, 0, 0]} name='Leads ("Entrada")' />
+                <Bar dataKey="agendamentos" fill="#2563EB" radius={[2, 2, 0, 0]} name="Agendamentos" />
+              </BarChart>
             </ResponsiveContainer>
           </div>
         </div>
@@ -312,25 +563,25 @@ export default function PerformanceSdrPage() {
                 <div className="flex">
                    <div className="w-1/2 pr-6 flex flex-col gap-5 border-r border-[#f0f0f5]">
                       <div className="flex items-center justify-between">
-                         <span className="text-[13px] text-[#374151]">Agendamentos hoje: <span className="font-bold text-[#1d1d1f]">0 / 0</span> <span className="text-[#d1d5db] text-[10px] ml-1">••••</span></span>
-                         <div className="bg-[#f3f4f6] text-[#1d1d1f] font-bold rounded px-4 py-1.5 text-[15px]">0</div>
+                         <span className="text-[13px] text-[#374151]">Novos Agend. (Hoje)</span>
+                         <div className="bg-[#f3f4f6] text-[#1d1d1f] font-bold rounded px-4 py-1.5 text-[15px]">{(() => { const today = new Date(); const dayNum = today.getDate(); const entry = (apiData?.dailyLeads ?? []).find((d: any) => d.dia === dayNum); return entry?.novosAgendamentos ?? 0; })()}</div>
                       </div>
                       <div className="flex items-center justify-between">
-                         <span className="text-[13px] text-[#374151]">Reagendamentos</span>
-                         <div className="bg-[#f3f4f6] text-[#1d1d1f] font-bold rounded px-4 py-1.5 text-[15px]">0</div>
+                         <span className="text-[13px] text-[#374151]">Reagendados (Hoje)</span>
+                         <div className="bg-[#f3f4f6] text-[#1d1d1f] font-bold rounded px-4 py-1.5 text-[15px]">{(() => { const today = new Date(); const dayNum = today.getDate(); const entry = (apiData?.dailyLeads ?? []).find((d: any) => d.dia === dayNum); return entry?.reagendamentosEfetivados ?? 0; })()}</div>
                       </div>
                    </div>
                    <div className="w-1/2 pl-6 flex flex-col gap-5">
                       <div className="flex items-center justify-between">
                          <span className="text-[13px] text-[#374151]">Agendamentos</span>
-                         <span className="font-medium text-[16px]">0</span>
+                         <span className="font-medium text-[16px]">{displayed.reduce((s: any, r: any) => s + r.agendamentos, 0)}</span>
                       </div>
                       <div className="flex items-center justify-between">
                          <div className="flex items-center gap-2">
                            <span className="text-[13px] text-[#374151]">Conversão SDR</span>
-                           <span className="text-[9px] text-[#9ca3af] leading-tight">Agendamentos • Leads<br/>atendimento</span>
+                           <span className="text-[9px] text-[#9ca3af] leading-tight">Agendamentos ÷ Leads<br/>atendimento</span>
                          </div>
-                         <span className="font-bold text-[16px]">0%</span>
+                         <span className="font-bold text-[16px]">{displayed.reduce((s: any, r: any) => s + r.leadsGerados, 0) > 0 ? ((displayed.reduce((s: any, r: any) => s + r.agendamentos, 0) / displayed.reduce((s: any, r: any) => s + r.leadsGerados, 0)) * 100).toFixed(1) : '0'}%</span>
                       </div>
                    </div>
                 </div>
@@ -343,22 +594,18 @@ export default function PerformanceSdrPage() {
                 <div className="flex items-center justify-between">
                    <div className="flex items-center gap-4">
                       <span className="text-[13px] text-[#374151]">Leads passados a Closer</span>
-                      <div className="bg-[#f3f4f6] text-[#1d1d1f] font-bold rounded px-4 py-1 text-[15px] mr-8">0</div>
+                      <div className="bg-[#f3f4f6] text-[#1d1d1f] font-bold rounded px-4 py-1 text-[15px] mr-8">{displayed.reduce((s: any, r: any) => s + (r.reunioes || 0), 0)}</div>
                    </div>
                    
                    <div className="flex items-center gap-12">
                       <div className="flex items-center gap-4">
                          <span className="text-[13px] text-[#374151]">Speed</span>
-                         <div className="flex gap-1.5">
-                           <div className="w-2.5 h-2.5 rounded-full bg-[#d97706]"></div>
-                           <div className="w-2.5 h-2.5 rounded-full bg-[#fca5a5]"></div>
-                           <div className="w-2.5 h-2.5 rounded-full bg-[#d1d5db]"></div>
-                         </div>
+                         {(() => { const avg = displayed.length > 0 ? displayed.reduce((s: any, r: any) => s + r.speedToLeadMin, 0) / displayed.length : 0; const color = avg <= 20 ? '#22c55e' : avg <= 60 ? '#d97706' : '#ef4444'; return (<div className="flex gap-1.5"><div className="w-2.5 h-2.5 rounded-full" style={{backgroundColor: color}}></div><span className="text-[12px] font-semibold" style={{color}}>{Math.round(avg)}m</span></div>); })()}
                       </div>
 
                       <div className="flex items-center gap-4">
-                         <span className="text-[13px] text-[#374151] relative">Tarefas abertas <span className="absolute -top-1 -right-2 text-[8px] text-[#d1d5db]"></span></span>
-                         <div className="bg-[#f3f4f6] text-[#1d1d1f] font-bold rounded px-4 py-1 text-[15px]">0</div>
+                         <span className="text-[13px] text-[#374151]">Tarefas abertas</span>
+                         <div className="bg-[#f3f4f6] text-[#1d1d1f] font-bold rounded px-4 py-1 text-[15px]">{totais?.tarefasVencidas ?? 0}</div>
                       </div>
                    </div>
                 </div>
@@ -369,8 +616,8 @@ export default function PerformanceSdrPage() {
                 <div className="w-1/2 bg-white rounded-xl border border-[#e5e5ea] shadow-sm p-6">
                    <h3 className="text-[14px] font-bold text-[#1d1d1f] mb-6">Passagem a SDR</h3>
                    <div className="flex items-center justify-between mb-4">
-                      <span className="text-[13px] text-[#374151]">Leads passados a Closer</span>
-                      <div className="bg-[#f3f4f6] text-[#1d1d1f] font-bold rounded px-4 py-1 text-[15px]">0</div>
+                      <span className="text-[13px] text-[#374151]">Leads recebidos no período</span>
+                      <div className="bg-[#f3f4f6] text-[#1d1d1f] font-bold rounded px-4 py-1 text-[15px]">{totais?.leadsGerados ?? 0}</div>
                    </div>
                    <div className="flex items-center gap-2 mt-6">
                       <div className="flex gap-1">
@@ -388,22 +635,22 @@ export default function PerformanceSdrPage() {
                    <div className="grid grid-cols-4 gap-4 items-end">
                       
                       <div className="flex flex-col gap-2">
-                        <p className="text-[18px] font-bold text-[#1d1d1f]">0%</p>
+                        <p className="text-[18px] font-bold text-[#1d1d1f]">{(() => { const ag = displayed.reduce((s: any, x: any) => s + (x.agendamentos || 0), 0); const ns = displayed.reduce((s: any, x: any) => s + (x.noShowsNoPeriodo || 0), 0); return ag > 0 ? ((ns / ag) * 100).toFixed(1) : '0'; })()}%</p>
                         <p className="text-[9px] text-[#86868b] leading-tight font-medium">No-show gerado</p>
                       </div>
 
                       <div className="flex flex-col gap-2">
-                        <p className="text-[18px] font-bold text-[#1d1d1f]">0% <span className="text-[#d1d5db] text-[10px]">••</span></p>
+                        <p className="text-[18px] font-bold text-[#1d1d1f]">{(() => { const ag = displayed.reduce((s: any, x: any) => s + (x.agendamentos || 0), 0); const ns = displayed.reduce((s: any, x: any) => s + (x.noShowsNoPeriodo || 0), 0); return ag > 0 ? (((ag - ns) / ag) * 100).toFixed(1) : '0'; })()}%</p>
                         <p className="text-[9px] text-[#86868b] leading-tight font-medium">Comparecimento</p>
                       </div>
 
                       <div className="flex flex-col gap-2">
-                        <p className="text-[18px] font-bold text-[#1d1d1f]">0%</p>
+                        <p className="text-[18px] font-bold text-[#1d1d1f]">{displayed.length > 0 ? (displayed.reduce((s: any, r: any) => s + (r.taxaReagendamento || 0), 0) / displayed.length).toFixed(1) : '0'}%</p>
                         <p className="text-[9px] text-[#86868b] leading-tight font-medium">Taxa de retorno</p>
                       </div>
 
                       <div className="flex flex-col gap-2 items-end">
-                        <p className="text-[18px] font-black text-[#d97706]">0<span className="text-[10px] text-[#9ca3af]">/100</span></p>
+                        <p className="text-[18px] font-black text-[#d97706]">{displayed.length > 0 ? Math.round(displayed.reduce((s: any, r: any) => s + (r.sdrScoreMedia || 0), 0) / displayed.length) : 0}<span className="text-[10px] text-[#9ca3af]">/100</span></p>
                         <p className="text-[9px] text-[#86868b] leading-tight font-medium">Score SDR</p>
                       </div>
 
@@ -424,29 +671,29 @@ export default function PerformanceSdrPage() {
                    <div className="flex items-center gap-10">
                      <div>
                        <p className="text-[12px] text-[#86868b] mb-1">No-show gerado</p>
-                       <p className="text-[20px] font-medium text-[#1d1d1f]">0%</p>
+                       <p className="text-[20px] font-medium text-[#1d1d1f]">{(() => { const ag = displayed.reduce((s: any, x: any) => s + (x.agendamentos || 0), 0); const ns = displayed.reduce((s: any, x: any) => s + (x.noShowsNoPeriodo || 0), 0); return ag > 0 ? ((ns / ag) * 100).toFixed(1) : '0'; })()}%</p>
                      </div>
                      <div>
-                       <p className="text-[12px] text-[#86868b] mb-1 opacity-0">-</p>
-                       <p className="text-[20px] font-medium text-[#1d1d1f]">0%</p>
+                       <p className="text-[12px] text-[#86868b] mb-1">Comparecimento</p>
+                       <p className="text-[20px] font-medium text-[#1d1d1f]">{(() => { const ag = displayed.reduce((s: any, x: any) => s + (x.agendamentos || 0), 0); const ns = displayed.reduce((s: any, x: any) => s + (x.noShowsNoPeriodo || 0), 0); return ag > 0 ? (((ag - ns) / ag) * 100).toFixed(1) : '0'; })()}%</p>
                      </div>
                    </div>
                    
                    <div className="flex flex-col items-end pr-4">
-                     <p className="text-[20px] font-black text-[#d97706]">0<span className="text-[12px] text-[#9ca3af]">/100</span></p>
+                     <p className="text-[20px] font-black text-[#d97706]">{displayed.length > 0 ? Math.round(displayed.reduce((s: any, r: any) => s + (r.sdrScoreMedia || 0), 0) / displayed.length) : 0}<span className="text-[12px] text-[#9ca3af]">/100</span></p>
                      <p className="text-[11px] text-[#86868b] mt-1 hidden">-</p>
                    </div>
 
                    <div className="flex items-center gap-10">
                      <div>
                        <p className="text-[12px] text-[#86868b] mb-1">Comparecimento</p>
-                       <p className="text-[20px] font-medium text-[#1d1d1f]">0%</p>
+                       <p className="text-[20px] font-medium text-[#1d1d1f]">{(() => { const r = displayed.reduce((s: any, x: any) => s + (x.reunioes || 0), 0); const ns = displayed.reduce((s: any, x: any) => s + (x.noShowsNoPeriodo || 0), 0); const e = r + ns; return e > 0 ? ((r / e) * 100).toFixed(1) : '0'; })()}%</p>
                      </div>
                    </div>
 
                    <div className="flex flex-col items-end pr-2 justify-end">
                      <p className="text-[12px] text-[#86868b] mb-2 right-4 relative">Score <span className="font-bold">SDR</span></p>
-                     <ScoreArcGauge score={0} />
+                     <ScoreArcGauge score={displayed.length > 0 ? Math.round(displayed.reduce((s: any, r: any) => s + (r.sdrScoreMedia || 0), 0) / displayed.length) : 0} />
                    </div>
                 </div>
              </div>
@@ -476,7 +723,7 @@ export default function PerformanceSdrPage() {
                               <td colSpan={7} className="py-16 text-center text-[12px] text-[#86868b]">Nenhum dado no período.</td>
                            </tr>
                          ) : (
-                           displayed.map((row: any, i: number) => (
+                           displayed.filter((row: any) => row.leadsGerados > 0 || row.agendamentos > 0).map((row: any, i: number) => (
                              <tr key={row.agentName} className="border-t border-[#f0f0f5]">
                                <td className="py-3 pl-6">
                                   <div className={`w-5 h-5 rounded-full flex items-center justify-center font-bold pb-px ${
@@ -488,7 +735,7 @@ export default function PerformanceSdrPage() {
                                <td className="py-3 font-semibold text-[#1d1d1f]">{row.agentName}</td>
                                <td className="py-3 text-right pr-4 text-[#374151]">{row.leadsGerados}</td>
                                <td className="py-3 text-right pr-4 text-[#86868b]">{row.leadsNoFunil}</td>
-                               <td className="py-3 text-right pr-4 text-[#86868b]">0%</td>
+                               <td className="py-3 text-right pr-4 text-[#86868b]">{row.leadsGerados > 0 ? ((row.agendamentos / row.leadsGerados) * 100).toFixed(1) : '0'}%</td>
                                <td className="py-3 text-right pr-4 font-semibold text-[#2563EB]">{row.agendamentos}</td>
                                <td className="py-3 text-center pr-6">
                                  {row.sdrScoreMedia > 0 ? (
@@ -505,6 +752,118 @@ export default function PerformanceSdrPage() {
                 </div>
              </div>
 
+          </div>
+        </div>
+
+        {/* ── METAS: INDIVIDUAL + GERAL ── */}
+        <div className="mt-8 grid grid-cols-1 md:grid-cols-2 gap-5">
+
+          {/* Meta Individual de Agendamentos */}
+          <div className="bg-white rounded-[16px] border border-[#e5e5ea] shadow-[0_2px_12px_rgba(0,0,0,0.03)] p-6">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-[13px] font-bold text-[#1d1d1f] uppercase tracking-wide">Meta Individual · Agendamentos</h3>
+              <span className="text-[11px] text-[#86868b]">{mesLabel(start)}</span>
+            </div>
+
+            {/* Progresso */}
+            {(() => {
+              const myStats = stats.find((r: any) => {
+                if (!userName) return false;
+                const n = userName.toLowerCase();
+                const a = (r.agentName ?? "").toLowerCase();
+                return a.startsWith(n) || n.startsWith(a.split(" ")[0]);
+              });
+              const realizado = myStats?.agendamentos ?? sdrAgend;
+              const pct = metaAgend > 0 ? Math.min(100, Math.round((realizado / metaAgend) * 100)) : 0;
+              const color = pct >= 100 ? "#16a34a" : pct >= 60 ? "#d97706" : "#dc2626";
+              return (
+                <div className="mb-5">
+                  <div className="flex justify-between items-baseline mb-2">
+                    <span className="text-[28px] font-black text-[#1d1d1f] leading-none">{realizado}</span>
+                    <span className="text-[13px] text-[#86868b]">de <strong className="text-[#1d1d1f]">{metaAgend > 0 ? metaAgend : "—"}</strong> agend.</span>
+                  </div>
+                  <div className="w-full h-2.5 bg-[#f0f0f5] rounded-full overflow-hidden">
+                    <div className="h-full rounded-full transition-all duration-700" style={{ width: `${pct}%`, background: color }} />
+                  </div>
+                  <div className="flex justify-between mt-1.5 text-[11px]">
+                    <span style={{ color }}>{pct}% atingido</span>
+                    {metaAgend > 0 && realizado < metaAgend && (
+                      <span className="text-[#86868b]">faltam {metaAgend - realizado}</span>
+                    )}
+                  </div>
+                </div>
+              );
+            })()}
+
+            {/* Input para definir meta */}
+            <div className="flex items-center gap-2 border-t border-[#f0f0f5] pt-4">
+              <label className="text-[12px] text-[#86868b] shrink-0">Minha meta:</label>
+              <input
+                type="number"
+                min={0}
+                value={metaAgendInput}
+                onChange={e => setMetaAgendInput(e.target.value)}
+                placeholder="ex: 30"
+                className="flex-1 border border-[#e5e5ea] rounded-lg px-3 py-1.5 text-[13px] text-[#1d1d1f] focus:outline-none focus:ring-2 focus:ring-[#b49136]"
+              />
+              <button
+                onClick={saveMeta}
+                disabled={savingMeta}
+                className="px-4 py-1.5 rounded-lg text-[12px] font-semibold text-white bg-[#1d1d1f] hover:bg-[#333] transition-colors disabled:opacity-50"
+              >
+                {savingMeta ? "..." : "Salvar"}
+              </button>
+            </div>
+          </div>
+
+          {/* Meta Geral de Vendas */}
+          <div className="bg-white rounded-[16px] border border-[#e5e5ea] shadow-[0_2px_12px_rgba(0,0,0,0.03)] p-6">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-[13px] font-bold text-[#1d1d1f] uppercase tracking-wide">Meta Geral · Vendas do Time</h3>
+              <span className="text-[11px] text-[#86868b]">{metaGeral?.goal?.cycleName ?? "—"}</span>
+            </div>
+            {metaGeral ? (() => {
+              const target = metaGeral.goal?.target ?? 0;
+              const achieved = metaGeral.achieved ?? 0;
+              const pct = target > 0 ? Math.min(100, Math.round((achieved / target) * 100)) : 0;
+              const color = pct >= 100 ? "#16a34a" : pct >= 60 ? "#d97706" : "#dc2626";
+              const fmtM = (v: number) => v >= 1_000_000
+                ? `R$ ${(v/1_000_000).toFixed(2).replace(".", ",")}M`
+                : new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL", maximumFractionDigits: 0 }).format(v);
+              return (
+                <>
+                  <div className="flex justify-between items-baseline mb-2">
+                    <span className="text-[28px] font-black text-[#1d1d1f] leading-none">{fmtM(achieved)}</span>
+                    <span className="text-[13px] text-[#86868b]">meta <strong className="text-[#1d1d1f]">{fmtM(target)}</strong></span>
+                  </div>
+                  <div className="w-full h-2.5 bg-[#f0f0f5] rounded-full overflow-hidden mb-1.5">
+                    <div className="h-full rounded-full transition-all duration-700" style={{ width: `${pct}%`, background: color }} />
+                  </div>
+                  <div className="flex justify-between text-[11px]">
+                    <span style={{ color }}>{pct}% da meta</span>
+                    {achieved < target && (
+                      <span className="text-[#86868b]">faltam {fmtM(target - achieved)}</span>
+                    )}
+                  </div>
+                  <div className="mt-4 grid grid-cols-3 gap-3 border-t border-[#f0f0f5] pt-4">
+                    <div className="text-center">
+                      <p className="text-[10px] text-[#86868b] uppercase tracking-wide mb-1">Vendas</p>
+                      <p className="text-[16px] font-bold text-[#1d1d1f]">{metaGeral.wonCount ?? 0}</p>
+                    </div>
+                    <div className="text-center">
+                      <p className="text-[10px] text-[#86868b] uppercase tracking-wide mb-1">Ticket Médio</p>
+                      <p className="text-[16px] font-bold text-[#1d1d1f]">{metaGeral.wonCount > 0 ? fmtM(achieved / metaGeral.wonCount) : "—"}</p>
+                    </div>
+                    <div className="text-center">
+                      <p className="text-[10px] text-[#86868b] uppercase tracking-wide mb-1">Dias Restantes</p>
+                      <p className="text-[16px] font-bold text-[#1d1d1f]">{metaGeral.daysLeft ?? 0}</p>
+                    </div>
+                  </div>
+                </>
+              );
+            })() : (
+              <p className="text-[13px] text-[#86868b]">Nenhuma meta configurada.</p>
+            )}
           </div>
         </div>
 

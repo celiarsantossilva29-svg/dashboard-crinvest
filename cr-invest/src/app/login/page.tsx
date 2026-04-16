@@ -20,13 +20,14 @@ export default function LoginPage() {
       const result = await signIn("credentials", {
         email,
         password,
-        callbackUrl: "/dashboard",
-        redirect: true,
+        redirect: false,
       });
 
       if (result?.error) {
         setError("E-mail ou senha incorretos.");
         setLoading(false);
+      } else if (result?.ok) {
+        router.push("/dashboard");
       }
     } catch (err: any) {
       setError("Erro ao tentar entrar: " + (err.message || "Erro desconhecido"));

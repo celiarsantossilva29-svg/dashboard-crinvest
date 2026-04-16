@@ -1,0 +1,14 @@
+AdsMetrics: 0
+CloserGoal: 0
+CloserMonthlySummary: 0
+CommissionConfig: 1
+DialerMetrics: 2
+GoToToken: 1
+Goal: 1
+Installment: 72
+KommoToken: 1
+Lead: 7210
+Sale: 6
+SyncLog: 8
+TeamGoal: 0
+Vendedor: 4

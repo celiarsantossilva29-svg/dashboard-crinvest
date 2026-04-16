@@ -12,7 +12,24 @@
       "Bash(npx next:*)",
       "Bash(xargs grep:*)",
       "Bash(node -e \":*)",
-      "Bash(curl:*)"
+      "Bash(curl:*)",
+      "Bash(node -e ':*)",
+      "Bash(python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); agents=d['data']['agents']; [print\\(a['agentName'], '| vendas:', a['vendas'], '| receita:', a['receita'], '| ticket:', a['ticketMedio'], '| win:', a['taxaWin']\\) for a in agents]\")",
+      "Bash(node -e \"let d=''; process.stdin.on\\('data',c=>d+=c\\); process.stdin.on\\('end',\\(\\)=>{ const j=JSON.parse\\(d\\); j.data.agents.forEach\\(a=>console.log\\(a.agentName,'| vendas:',a.vendas,'| receita:',a.receita,'| ticket:',a.ticketMedio,'| win:',a.taxaWin\\)\\); }\\)\")",
+      "Bash(node -e \"let d=''; process.stdin.on\\('data',c=>d+=c\\); process.stdin.on\\('end',\\(\\)=>{ try { const j=JSON.parse\\(d\\); console.log\\(JSON.stringify\\(j,null,2\\)\\); } catch\\(e\\){ console.log\\(d.slice\\(0,500\\)\\); } }\\)\")",
+      "Bash(python -c \"import sys,json; d=json.load\\(sys.stdin\\); s=d['data']['stats'][0]; print\\('leadsGerados:', s['leadsGerados']\\); print\\('agendamentos:', s['agendamentos']\\); print\\('reunioes:', s.get\\('reunioes'\\)\\); print\\('noShowsNoPeriodo:', s.get\\('noShowsNoPeriodo'\\)\\); print\\('taxaNoShow:', s['taxaNoShow']\\); print\\('totais.leadsGerados:', d['data']['totais']['leadsGerados']\\)\")",
+      "Bash(python -c ':*)",
+      "Bash(node backfill-scheduled-by.js)",
+      "Bash(node check-scheduled-by.js)",
+      "Bash(node check-kommo-users.js)",
+      "Bash(node -e \"require\\('C:/Users/giova/.gemini/antigravity/scratch/sistema-comissoes/cr-invest/node_modules/@prisma/client'\\)\")",
+      "Bash(node resync-scheduled-by.js)",
+      "WebSearch",
+      "WebFetch(domain:developers.kommo.com)",
+      "WebFetch(domain:www.kommo.com)",
+      "Bash(start:*)",
+      "Bash(node --env-file=.env.local -e ':*)",
+      "Bash(node -e ' *)"
     ]
   }
 }

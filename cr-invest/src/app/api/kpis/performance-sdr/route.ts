@@ -4,6 +4,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { USE_MOCK, getMockLeads, getMockDialerMetrics } from "@/lib/mock-data";
 
+export const dynamic = 'force-dynamic';
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export interface SdrStats {
@@ -15,6 +17,7 @@ export interface SdrStats {
   speedToLeadMin: number;
   tentativasPorLead: number;
   ligacoesPorLead: number;     // intensidade: ligações / lead único
+  ligacoesPorDia: number;      // cadência: ligações / dia útil
   tarefasVencidas: number;
   // Passagem de bastão
   agendamentos: number;
@@ -44,6 +47,12 @@ export interface FunilSdrRow {
   total: number;
 }
 
+export interface AgendOrigemPanel {
+  agendamentos: number;
+  noShows: number;
+  taxaNoShow: number;
+}
+
 export interface SdrApiResponse {
   stats: SdrStats[];
   totais: {
@@ -54,10 +63,17 @@ export interface SdrApiResponse {
     recuperacao: number;
     recuperacaoMotivoTop: string | null;
     ligacoesPorLeadMedio: number;
+    ligacoesPorDiaMedio: number;
     agendPorDiaMedio: number;
   };
   dailyLeads: { dia: number; date: string; leads: number }[];
   funilPorSdr: FunilSdrRow[];
+  /** Agendamentos por origem, todos filtrados por scheduledAt no período */
+  agendamentosPorOrigem: {
+    total: number;
+    ia: AgendOrigemPanel;
+    other: AgendOrigemPanel;
+  };
 }
 
 // ─── Deterministic pseudo-random para mock ────────────────────────────────────
@@ -94,6 +110,7 @@ export async function GET(req: NextRequest) {
 
     return NextResponse.json({ data: result, updatedAt, error: null });
   } catch (err: any) {
+    console.error("[performance-sdr] Erro:", err?.stack ?? err?.message ?? err);
     return NextResponse.json(
       { data: null, updatedAt, error: err?.message ?? "Internal error" },
       { status: 500 }
@@ -123,18 +140,19 @@ function buildMockResponse(startDate: Date, endDate: Date, now: Date, numDays: n
     const agentDialer = dialerRows.filter((d) => d.agentName === name);
 
     const leadsNoFunil = agentLeads.filter((l) => !["won", "lost"].includes(l.status)).length;
-    const reagendados = agentLeads.filter((_, i) => seeded(agentIdx * 37 + i, 0, 3) === 0).length;
-    const recuperacao = agentLeads.filter(
-      (_, i) => seeded(agentIdx * 53 + i, 0, 7) === 0
-    ).length;
-
+    
+    // Real reagendados: count leads with reagendadoAt set
+    const reagendadosTotal = agentLeads.filter(l => l.reagendadoAt != null).length;
+    // (mock metrics recuperacao removed/replaced with zeros or actuals if we have them)
+    const recuperacao = 0; 
+    
     const speedSamples = agentLeads
       .filter((l) => l.contactedAt)
       .map((l) => (l.contactedAt!.getTime() - l.createdAt.getTime()) / 60000);
     const speedToLeadMin =
       speedSamples.length > 0
         ? parseFloat((speedSamples.reduce((s, v) => s + v, 0) / speedSamples.length).toFixed(0))
-        : seeded(agentIdx * 13 + 7, 8, 120);
+        : 0;
 
     const tentativas =
       agentLeads.length > 0
@@ -142,26 +160,35 @@ function buildMockResponse(startDate: Date, endDate: Date, now: Date, numDays: n
         : 0;
 
     const activeLeads = agentLeads.filter((l) => !["won", "lost"].includes(l.status));
-    const tarefasVencidas = activeLeads.filter((_, i) => seeded(agentIdx * 31 + i, 0, 6) === 0).length;
+    
+    // As per Kommo, tasks are fetched via their API. Let's just default to 0 for now unless we calculate it.
+    const tarefasVencidas = 0; 
 
+    // Match exact logic from funil.ts
     const agendamentos = agentLeads.filter((l) =>
-      ["scheduled", "meeting", "won", "lost"].includes(l.status)
+      l.scheduledAt != null || l.meetingAt != null || l.status === "won" || ["scheduled", "meeting"].includes(l.status)
     ).length;
+    const reunioes = agentLeads.filter((l) => l.meetingAt != null || l.status === "won" || ["meeting"].includes(l.status)).length;
+    
     const agendPorDia = parseFloat((agendamentos / numDays).toFixed(2));
     const agendPorSemana = parseFloat((agendamentos / (numDays / 7)).toFixed(1));
 
-    const reagendadosTotal = reagendados;
-    const reagendadosConvertidos = Math.floor(reagendadosTotal * 0.55);
+    // Calculate actual Reagendamentos converted
+    const reagendadosConvertidos = agentLeads.filter(l => l.reagendadoAt != null && (l.meetingAt != null || l.status === "won")).length;
     const taxaReagendamento =
       reagendadosTotal > 0
         ? parseFloat(((reagendadosConvertidos / reagendadosTotal) * 100).toFixed(1))
         : 0;
 
-    const comReuniao = agendamentos;
-    const noShowCount = agentLeads.filter(
-      (_, i) => ["scheduled", "meeting", "won", "lost"].includes(agentLeads[i]?.status ?? "") && seeded(agentIdx * 41 + i, 0, 4) === 0
-    ).length;
-    const taxaNoShow = comReuniao > 0 ? parseFloat(((noShowCount / comReuniao) * 100).toFixed(1)) : 0;
+    // No-show: foi agendado, não compareceu, e não está mais pendente (exclui status "scheduled")
+    const noShowCount = agentLeads.filter((l) => {
+      const foiAgendado = l.scheduledAt != null || l.meetingAt != null || l.status === "won" || ["scheduled", "meeting"].includes(l.status);
+      if (!foiAgendado) return false;
+      if (l.meetingAt != null || l.status === "won" || l.status === "meeting") return false;
+      if (l.status === "scheduled") return false;
+      return true;
+    }).length;
+    const taxaNoShow = agendamentos > 0 ? parseFloat(((noShowCount / agendamentos) * 100).toFixed(1)) : 0;
 
     const sdrScoreMedia = parseFloat((3.0 + seeded(agentIdx * 43, 0, 18) / 10).toFixed(1));
 
@@ -178,6 +205,7 @@ function buildMockResponse(startDate: Date, endDate: Date, now: Date, numDays: n
     const ligacoesPorLead = agentLeads.length > 0
       ? parseFloat((ligacoes / agentLeads.length).toFixed(1))
       : 0;
+    const ligacoesPorDia = parseFloat((ligacoes / numDays).toFixed(1));
 
     return {
       agentName: name,
@@ -186,8 +214,10 @@ function buildMockResponse(startDate: Date, endDate: Date, now: Date, numDays: n
       speedToLeadMin,
       tentativasPorLead: tentativas,
       ligacoesPorLead,
+      ligacoesPorDia,
       tarefasVencidas,
       agendamentos,
+      reunioes: Math.floor(agendamentos * 0.7),
       agendPorDia,
       agendPorSemana,
       taxaReagendamento,
@@ -208,7 +238,7 @@ function buildMockResponse(startDate: Date, endDate: Date, now: Date, numDays: n
     d.setDate(d.getDate() + i);
     const dateStr = d.toISOString().split("T")[0];
     const dayLeads = leads.filter((l) => l.createdAt.toISOString().split("T")[0] === dateStr).length;
-    return { dia: i + 1, date: dateStr, leads: dayLeads };
+    return { dia: i + 1, date: dateStr, leads: dayLeads, agendamentos: 0, novosAgendamentos: 0, reagendamentosEfetivados: 0 };
   });
 
   const totLeads = stats.reduce((s, r) => s + r.leadsGerados, 0);
@@ -226,6 +256,11 @@ function buildMockResponse(startDate: Date, endDate: Date, now: Date, numDays: n
 
   return {
     stats,
+    agendamentosPorOrigem: {
+      total: 0,
+      ia:    { agendamentos: 0, noShows: 0, taxaNoShow: 0 },
+      other: { agendamentos: 0, noShows: 0, taxaNoShow: 0 },
+    },
     totais: {
       leadsGerados: totLeads,
       leadsNoFunil: totNoFunil,
@@ -236,6 +271,9 @@ function buildMockResponse(startDate: Date, endDate: Date, now: Date, numDays: n
       ligacoesPorLeadMedio: parseFloat(
         (stats.filter((s) => s.ligacoesPorLead > 0).reduce((acc, s) => acc + s.ligacoesPorLead, 0) /
           Math.max(stats.filter((s) => s.ligacoesPorLead > 0).length, 1)).toFixed(1)
+      ),
+      ligacoesPorDiaMedio: parseFloat(
+        (stats.reduce((acc, s) => acc + s.ligacoesPorDia, 0) / Math.max(stats.length, 1)).toFixed(1)
       ),
       agendPorDiaMedio: parseFloat(
         (stats.reduce((acc, s) => acc + s.agendPorDia, 0) / Math.max(stats.length, 1)).toFixed(2)
@@ -248,12 +286,78 @@ function buildMockResponse(startDate: Date, endDate: Date, now: Date, numDays: n
 
 // ─── Real DB ──────────────────────────────────────────────────────────────────
 
+function getBusinessMinutes(start: Date, end: Date): number {
+  if (start >= end) return 0;
+  let ms = 0;
+  let cur = new Date(start.getTime());
+  while (cur < end) {
+    // Converte para BRT (UTC-3) para checar dia/hora locais
+    const brtD = new Date(cur.getTime() - 3 * 3600000);
+    const day = brtD.getUTCDay();
+    const h = brtD.getUTCHours();
+    // Horário comercial: seg–sex, 9h–19h BRT
+    if (day >= 1 && day <= 5 && h >= 9 && h < 19) {
+      const nextHour = new Date(cur.getTime());
+      nextHour.setUTCMinutes(0, 0, 0);
+      nextHour.setUTCHours(nextHour.getUTCHours() + 1);
+      const jump = Math.min(end.getTime(), nextHour.getTime()) - cur.getTime();
+      ms += jump;
+      cur = new Date(cur.getTime() + jump);
+    } else {
+      const nextHour = new Date(cur.getTime());
+      nextHour.setUTCMinutes(0, 0, 0);
+      nextHour.setUTCHours(nextHour.getUTCHours() + 1);
+      cur = new Date(nextHour.getTime());
+    }
+  }
+  return ms / 60000;
+}
+
+/** Conta dias úteis (seg–sex) entre startDate e endDate inclusive */
+function countBusinessDays(start: Date, end: Date): number {
+  let count = 0;
+  const cur = new Date(start.getTime());
+  // Normaliza para meia-noite BRT
+  cur.setUTCHours(3, 0, 0, 0); // 03:00 UTC = 00:00 BRT
+  const endNorm = new Date(end.getTime());
+  endNorm.setUTCHours(3, 0, 0, 0);
+  while (cur <= endNorm) {
+    const day = cur.getUTCDay();
+    if (day >= 1 && day <= 5) count++;
+    cur.setUTCDate(cur.getUTCDate() + 1);
+  }
+  return Math.max(count, 1);
+}
+
 async function buildRealResponse(startDate: Date, endDate: Date, now: Date, numDays: number): Promise<SdrApiResponse> {
-  const [leadsRows, dialerRows] = await Promise.all([
+  // Dias úteis decorridos: do início do período até hoje (ou até o fim, se o período já encerrou).
+  // Usa a DATA BRT de effectiveEnd para evitar que o endDate de "dia X" em UTC
+  // (que é X+1T02:59Z) seja contado como um dia a mais pelo countBusinessDays.
+  const effectiveEndRaw = endDate < now ? endDate : now;
+  const effectiveEndBrtStr = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Sao_Paulo" }).format(effectiveEndRaw);
+  const effectiveEnd = new Date(effectiveEndBrtStr + "T03:00:00Z"); // meia-noite BRT desse dia
+  const businessDays = countBusinessDays(startDate, effectiveEnd);
+
+  // dialerMetrics.date é salvo como UTC midnight (T00:00:00Z) pelo sync do GoTo.
+  // Usar UTC boundaries garante que datas como 2026-04-15T00:00:00Z sejam encontradas
+  // mesmo quando startDate é 2026-04-15T03:00:00Z (meia-noite BRT).
+  const dialerStart = new Date(startDate.toISOString().split("T")[0] + "T00:00:00Z");
+  const dialerEnd = new Date(endDate.toISOString().split("T")[0] + "T23:59:59Z");
+
+  const [leadsRows, dialerRows, callLogRows, sdrVendedores, activeLeadsAll] = await Promise.all([
     prisma.lead.findMany({
-      where: { createdAt: { gte: startDate, lte: endDate } },
+      where: {
+        OR: [
+          { createdAt: { gte: startDate, lte: endDate } },
+          { scheduledAt: { gte: startDate, lte: endDate } },
+          { reagendadoAt: { gte: startDate, lte: endDate } },
+          { meetingAt: { gte: startDate, lte: endDate } },
+          { noShowAt: { gte: startDate, lte: endDate } }
+        ]
+      },
       select: {
         assignedTo: true,
+        scheduledBy: true,
         status: true,
         createdAt: true,
         arrivalAt: true,
@@ -262,75 +366,145 @@ async function buildRealResponse(startDate: Date, endDate: Date, now: Date, numD
         contactAttempts: true,
         interactionCount: true,
         scheduledAt: true,
+        meetingAt: true,
+        closedAt: true,
         nextTaskAt: true,
         isReagendado: true,
+        reagendadoAt: true,
+        goToCalls: true,
+        firstCallAt: true,
         noShow: true,
+        noShowAt: true,
         sdrScore: true,
         lostReason: true,
+        syncedAt: true,
       },
     }),
     prisma.dialerMetrics.findMany({
-      where: { date: { gte: startDate, lte: endDate } },
+      where: { date: { gte: dialerStart, lte: dialerEnd } },
       select: { agentName: true, totalCalls: true, talkTimeSecs: true },
+    }),
+    // LeadCallLog: ligações mapeadas a leads por data (idempotente, BRT-scoped)
+    // Fallback para [] se a tabela ainda não existir (Prisma client desatualizado).
+    (prisma as any).leadCallLog?.findMany({
+      where: { source: "goto", date: { gte: dialerStart, lte: dialerEnd } },
+      select: { leadId: true, agentId: true, agentName: true, callCount: true },
+    }) ?? Promise.resolve([]),
+    // Busca apenas vendedores com role SDR para filtrar os agentes
+    prisma.vendedor.findMany({
+      where: { role: "SDR", status: "ATIVO" },
+      select: { nome: true },
+    }),
+    // Carteira ativa de cada SDR: todos os leads ativos (não fechados) — denominator para lig/lead
+    prisma.lead.findMany({
+      where: { status: { notIn: ["won", "lost"] } },
+      select: { assignedTo: true },
     }),
   ]);
 
-  const agentNames = Array.from(
-    new Set<string>([
-      ...(leadsRows.map((l) => l.assignedTo).filter(Boolean) as string[]),
-      ...dialerRows.map((d) => d.agentName),
-    ])
-  );
+  // Nomes dos SDRs cadastrados (ex: "Cauê")
+  const sdrNomes = sdrVendedores.map((v) => v.nome?.toLowerCase() ?? "");
+
+  // Verifica se um nome de agente (do Kommo ou GoTo) pertence a um SDR cadastrado.
+  // O nome do Kommo pode ser o nome completo ("Cauê Perpétuo") enquanto o cadastro tem "Cauê".
+  const isSdr = (agentName: string | null | undefined): agentName is string => {
+    if (!agentName) return false;
+    const lower = agentName?.toLowerCase() ?? "";
+    return sdrNomes.some(
+      (sdr) => lower.startsWith(sdr) || sdr.startsWith(lower.split(" ")[0])
+    );
+  };
+
+  // Usa os SDRs cadastrados como base — garante que apareçam mesmo quando seus leads
+  // foram transferidos para um closer (assignedTo mudou) ou não há dados GoTo no período.
+  const agentNames = sdrVendedores.map((v) => v.nome).filter(Boolean) as string[];
 
   const stats: SdrStats[] = agentNames.map((name) => {
-    const agentLeads = leadsRows.filter((l) => l.assignedTo === name);
-    const agentDialer = dialerRows.filter((d) => d.agentName === name);
+    // Match parcial para capturar tanto "Cauê" (cadastro) quanto "Cauê Perpétuo" (Kommo/GoTo)
+    const matchName = (field: string | null | undefined) => {
+      if (!field || !name) return false;
+      const f = field.toLowerCase();
+      const n = name.toLowerCase();
+      return f.startsWith(n) || n.startsWith(f.split(" ")[0]);
+    };
+    const agentLeadsPeriod = leadsRows.filter((l) => matchName(l.assignedTo));
+    const agentLeadsCreated = agentLeadsPeriod.filter(l => l.createdAt >= startDate && l.createdAt <= endDate);
+    const agentDialer = dialerRows.filter((d) => matchName(d.agentName));
 
-    const leadsNoFunil = agentLeads.filter((l) => !["won", "lost"].includes(l.status)).length;
-    const reagendados = agentLeads.filter((l) => l.isReagendado).length;
-    const recuperacao = agentLeads.filter(
-      (l) => l.lostReason != null && !["won", "lost"].includes(l.status)
-    ).length;
+    const leadsNoFunil = agentLeadsCreated.filter((l) => !["won", "lost"].includes(l.status)).length;
 
-    // Recovery top reason
-    const recoveryReasons = agentLeads
+    const recoveryReasons = agentLeadsPeriod
       .filter((l) => l.lostReason != null && !["won", "lost"].includes(l.status))
       .map((l) => l.lostReason!);
     const reasonCount: Record<string, number> = {};
     for (const r of recoveryReasons) reasonCount[r] = (reasonCount[r] ?? 0) + 1;
     const recuperacaoMotivoTop = Object.entries(reasonCount).sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
 
-    const speedSamples = agentLeads
-      .filter((l) => (l.arrivalAt || l.createdAt) && (l.firstContactAt || l.contactedAt))
+    // Speed-to-Lead: usa leads criados no período (mede criação → primeiro contato/ação do SDR)
+    const speedSamples = agentLeadsCreated
+      .filter((l) => {
+        const firstContact = l.firstCallAt ?? l.firstContactAt ?? l.contactedAt;
+        return (l.arrivalAt || l.createdAt) && firstContact;
+      })
       .map((l) => {
         const from = l.arrivalAt ?? l.createdAt;
-        const to = l.firstContactAt ?? l.contactedAt!;
-        return (to.getTime() - from.getTime()) / 60000;
-      })
-      .filter((v) => v >= 0);
+        const to = l.firstCallAt ?? l.firstContactAt ?? l.contactedAt!;
+        const raw = getBusinessMinutes(from, to);
+        return Math.min(Math.max(raw, 0), 480);
+      });
+    const sortedSpeed = [...speedSamples].sort((a, b) => a - b);
     const speedToLeadMin =
-      speedSamples.length > 0
-        ? parseFloat((speedSamples.reduce((s, v) => s + v, 0) / speedSamples.length).toFixed(0))
+      sortedSpeed.length > 0
+        ? parseFloat(sortedSpeed[Math.floor(sortedSpeed.length / 2)].toFixed(0))
         : 0;
 
     const tentativas =
-      agentLeads.length > 0
+      agentLeadsPeriod.length > 0
         ? parseFloat(
-            (agentLeads.reduce((s, l) => s + (l.contactAttempts || l.interactionCount), 0) / agentLeads.length).toFixed(1)
+            (agentLeadsPeriod.reduce((s, l) => s + (l.contactAttempts || l.goToCalls || l.interactionCount), 0) / agentLeadsPeriod.length).toFixed(1)
           )
         : 0;
 
-    const tarefasVencidas = agentLeads.filter(
+    const tarefasVencidas = agentLeadsPeriod.filter(
       (l) => l.nextTaskAt && l.nextTaskAt < now && !["won", "lost"].includes(l.status)
     ).length;
 
-    const agendamentos = agentLeads.filter((l) =>
-      ["scheduled", "meeting", "won", "lost"].includes(l.status)
-    ).length;
-    const agendPorDia = parseFloat((agendamentos / numDays).toFixed(2));
-    const agendPorSemana = parseFloat((agendamentos / (numDays / 7)).toFixed(1));
+    // ── Métricas de passagem de bastão atribuídas por scheduledBy ──────────────
+    // scheduledBy captura quem moveu o lead para "1ª Reunião Confirmada" no Kommo,
+    // independente de para quem o lead foi reatribuído depois (ex: Closer após a reunião).
+    // Isso garante que agendamentos de Cauê apareçam em Cauê mesmo após leads irem para Célia.
+    const matchesAgent = (scheduledBy: string | null) => {
+      if (!scheduledBy) return false;
+      const s = scheduledBy?.toLowerCase() ?? "";
+      const n = name?.toLowerCase() ?? "";
+      return s.startsWith(n) || n.startsWith(s.split(" ")[0]);
+    };
 
-    const reagendadosForRate = agentLeads.filter((l) => l.isReagendado);
+    const agendadosPorMim = leadsRows.filter((l) =>
+      matchesAgent(l.scheduledBy) && l.scheduledAt != null &&
+      l.scheduledAt >= startDate && l.scheduledAt <= endDate
+    );
+
+    const agendamentos = agendadosPorMim.length;
+
+    // Reuniões realizadas dos leads que este SDR agendou
+    const reunioes = agendadosPorMim.filter((l) =>
+      l.meetingAt != null || ["meeting", "won", "lost"].includes(l.status)
+    ).length;
+
+    // Reagendamentos bem-sucedidos (reagendadoAt = SDR reconverteu um no-show)
+    // Atribuídos ao SDR pelo scheduledBy original
+    const reagendados = agendadosPorMim.filter((l) => {
+      const ts = l.reagendadoAt;
+      return ts != null && ts >= startDate && ts <= endDate;
+    }).length;
+
+    const agendPorDia = parseFloat((agendamentos / businessDays).toFixed(2));
+    // agendPorSemana = média semanal (5 dias úteis = 1 semana)
+    const agendPorSemana = parseFloat((agendamentos / (businessDays / 5)).toFixed(1));
+
+    // Taxa de reagendamento: dos leads que este SDR agendou e tiveram no-show, quantos voltou a converter
+    const reagendadosForRate = agendadosPorMim.filter((l) => l.isReagendado || l.reagendadoAt);
     const reagendadosConvertidos = reagendadosForRate.filter((l) =>
       ["scheduled", "meeting", "won"].includes(l.status)
     ).length;
@@ -339,17 +513,25 @@ async function buildRealResponse(startDate: Date, endDate: Date, now: Date, numD
         ? parseFloat(((reagendadosConvertidos / reagendadosForRate.length) * 100).toFixed(1))
         : 0;
 
-    const comReuniao = agendamentos;
-    const noShowCount = agentLeads.filter((l) => l.noShow).length;
-    const taxaNoShow = comReuniao > 0 ? parseFloat(((noShowCount / comReuniao) * 100).toFixed(1)) : 0;
+    // No-Show: eventos noShowAt no período em leads agendados por este SDR.
+    // Não usa aritmética (agend - reuniões) porque meetingAt só é preenchido via GoTo Connect.
+    // O campo noShowAt registra o evento concreto de no-show vindo do Kommo.
+    const noShowsNoPeriodo = agendadosPorMim.filter((l) =>
+      l.noShowAt != null && l.noShowAt >= startDate && l.noShowAt <= endDate
+    ).length;
+    const taxaNoShow = agendamentos > 0 ? parseFloat(((noShowsNoPeriodo / agendamentos) * 100).toFixed(1)) : 0;
 
-    const scores = agentLeads.map((l) => l.sdrScore).filter((s): s is number => s !== null);
+    const recuperacao = agentLeadsPeriod.filter((l) => {
+      return l.status !== "lost" && l.lostReason != null && l.syncedAt && l.syncedAt >= startDate && l.syncedAt <= endDate;
+    }).length;
+
+    const scores = agentLeadsPeriod.map((l) => l.sdrScore).filter((s): s is number => s !== null);
     const sdrScoreMedia =
       scores.length > 0
         ? parseFloat((scores.reduce((s, v) => s + v, 0) / scores.length).toFixed(1))
         : 0;
 
-    const maturacaoSamples = agentLeads
+    const maturacaoSamples = agentLeadsCreated
       .filter((l) => l.scheduledAt)
       .map((l) => (l.scheduledAt!.getTime() - l.createdAt.getTime()) / 86400000);
     const tempomaturacaoDias =
@@ -359,19 +541,40 @@ async function buildRealResponse(startDate: Date, endDate: Date, now: Date, numD
 
     const ligacoes = agentDialer.reduce((s, d) => s + d.totalCalls, 0);
     const talkTimeSecs = agentDialer.reduce((s, d) => s + d.talkTimeSecs, 0);
-    const ligacoesPorLead = agentLeads.length > 0
-      ? parseFloat((ligacoes / agentLeads.length).toFixed(1))
-      : 0;
+    
+    // ligacoesPorLead: ligações mapeadas a leads reais / leads únicos contatados
+    // Usa LeadCallLog (idempotente, BRT-scoped) para precisão por período.
+    const agentCallLogs = callLogRows.filter(c => {
+      if (!c.agentName || !name) return false;
+      const lower = c.agentName?.toLowerCase() ?? "";
+      const n = name?.toLowerCase() ?? "";
+      return lower.startsWith(n) || n.startsWith(lower.split(" ")[0]);
+    });
+    const totalMappedCalls = agentCallLogs.reduce((s, c) => s + c.callCount, 0);
+    const uniqueLeadsCalled = new Set(agentCallLogs.map(c => c.leadId)).size;
+    // Carteira ativa: todos os leads ativos (não fechados) sob responsabilidade deste SDR
+    const activeLeadsAgent = activeLeadsAll.filter((l) => matchName(l.assignedTo)).length;
+    // lig/lead = ligações do período / carteira ativa (visão de cadência)
+    // Fallback por prioridade: LeadCallLog → ligações totais / carteira ativa → 0
+    const ligacoesPorLead = uniqueLeadsCalled > 0
+      ? parseFloat((totalMappedCalls / uniqueLeadsCalled).toFixed(1))
+      : activeLeadsAgent > 0
+        ? parseFloat((ligacoes / activeLeadsAgent).toFixed(1))
+        : 0;
+    // ligacoesPorDia: total de ligações do discador / dias úteis decorridos
+    const ligacoesPorDia = parseFloat((ligacoes / businessDays).toFixed(1));
 
     return {
       agentName: name,
-      leadsGerados: agentLeads.length,
+      leadsGerados: agentLeadsCreated.length,
       leadsNoFunil,
       speedToLeadMin,
       tentativasPorLead: tentativas,
       ligacoesPorLead,
+      ligacoesPorDia,
       tarefasVencidas,
       agendamentos,
+      reunioes,
       agendPorDia,
       agendPorSemana,
       taxaReagendamento,
@@ -379,6 +582,7 @@ async function buildRealResponse(startDate: Date, endDate: Date, now: Date, numD
       recuperacao,
       recuperacaoMotivoTop,
       taxaNoShow,
+      noShowsNoPeriodo,
       sdrScoreMedia,
       tempomaturacaoDias,
       ligacoes,
@@ -386,16 +590,37 @@ async function buildRealResponse(startDate: Date, endDate: Date, now: Date, numD
     };
   }).sort((a, b) => b.agendamentos - a.agendamentos);
 
+  // ... skip intermediate until daily Leads ...
   // Daily leads breakdown
   const dailyLeads = Array.from({ length: numDays }).map((_, i) => {
     const d = new Date(startDate);
     d.setDate(d.getDate() + i);
-    const dateStr = d.toISOString().split("T")[0];
-    const dayLeads = leadsRows.filter((l) => l.createdAt.toISOString().split("T")[0] === dateStr).length;
-    return { dia: i + 1, date: dateStr, leads: dayLeads };
+    const dateStr = d.toISOString().split("T")[0]; // YYYY-MM-DD in UTC (since start is UTC midnight)
+    
+    // Convert DB timestamp to GMT-3 to match BR local time string formats
+    const dayLeads = leadsRows.filter((l) => {
+      const gmt3 = new Date(l.createdAt.getTime() - 3 * 3600 * 1000);
+      return gmt3.toISOString().split("T")[0] === dateStr;
+    }).length;
+    
+    const dayScheduled = leadsRows.filter((l) => {
+      if (!l.scheduledAt) return false;
+      const gmt3 = new Date(l.scheduledAt.getTime() - 3 * 3600 * 1000);
+      return gmt3.toISOString().split("T")[0] === dateStr;
+    }).length;
+
+    const dayReagendado = leadsRows.filter((l) => {
+      if (!l.reagendadoAt) return false;
+      const gmt3 = new Date(l.reagendadoAt.getTime() - 3 * 3600 * 1000);
+      return gmt3.toISOString().split("T")[0] === dateStr;
+    }).length;
+    
+    // O gráfico usará a soma (esforço total), mas a API manda separado também
+    const actualDay = parseInt(dateStr.split("-")[2], 10);
+    return { dia: actualDay, date: dateStr, leads: dayLeads, agendamentos: dayScheduled + dayReagendado, novosAgendamentos: dayScheduled, reagendamentosEfetivados: dayReagendado };
   });
 
-  const totLeads = stats.reduce((s, r) => s + r.leadsGerados, 0);
+  const totLeads = leadsRows.filter(l => l.createdAt >= startDate && l.createdAt <= endDate).length;
   const totNoFunil = stats.reduce((s, r) => s + r.leadsNoFunil, 0);
   const totVencidas = stats.reduce((s, r) => s + r.tarefasVencidas, 0);
   const totReagendados = stats.reduce((s, r) => s + r.reagendados, 0);
@@ -416,8 +641,39 @@ async function buildRealResponse(startDate: Date, endDate: Date, now: Date, numD
     return { sdr: name, new: count("new"), contacted: count("contacted"), qualified: count("qualified"), scheduled: count("scheduled"), meeting: count("meeting"), won: count("won"), lost: count("lost"), total };
   }).sort((a, b) => b.total - a.total);
 
+  // ── Origem dos agendamentos (scheduledAt no período — mesma âncora dos SDRs) ──
+  const IA_NAMES_SET = new Set(["IA", "Sellmap"]);
+
+  // Total real: todos os leads com scheduledAt no período (independente de scheduledBy)
+  const allAgendLeads = leadsRows.filter(l =>
+    l.scheduledAt != null && l.scheduledAt >= startDate && l.scheduledAt <= endDate
+  );
+
+  const agendIaLeads = allAgendLeads.filter(l => IA_NAMES_SET.has(l.scheduledBy ?? ""));
+  // Other inclui scheduledBy = null (histórico ainda não sincronizado) + ex-usuários + outros
+  const agendOtherLeads = allAgendLeads.filter(l =>
+    !IA_NAMES_SET.has(l.scheduledBy ?? "") &&
+    !(l.scheduledBy != null && isSdr(l.scheduledBy))
+  );
+  const noShowIa = agendIaLeads.filter(l => l.noShowAt != null && l.noShowAt >= startDate && l.noShowAt <= endDate).length;
+  const noShowOther = agendOtherLeads.filter(l => l.noShowAt != null && l.noShowAt >= startDate && l.noShowAt <= endDate).length;
+  const agendamentosPorOrigem = {
+    total: allAgendLeads.length,
+    ia: {
+      agendamentos: agendIaLeads.length,
+      noShows: noShowIa,
+      taxaNoShow: agendIaLeads.length > 0 ? parseFloat(((noShowIa / agendIaLeads.length) * 100).toFixed(1)) : 0,
+    },
+    other: {
+      agendamentos: agendOtherLeads.length,
+      noShows: noShowOther,
+      taxaNoShow: agendOtherLeads.length > 0 ? parseFloat(((noShowOther / agendOtherLeads.length) * 100).toFixed(1)) : 0,
+    },
+  };
+
   return {
     stats,
+    agendamentosPorOrigem,
     totais: {
       leadsGerados: totLeads,
       leadsNoFunil: totNoFunil,
@@ -429,8 +685,11 @@ async function buildRealResponse(startDate: Date, endDate: Date, now: Date, numD
         (stats.filter((s) => s.ligacoesPorLead > 0).reduce((acc, s) => acc + s.ligacoesPorLead, 0) /
           Math.max(stats.filter((s) => s.ligacoesPorLead > 0).length, 1)).toFixed(1)
       ),
+      ligacoesPorDiaMedio: parseFloat(
+        (stats.reduce((acc, s) => acc + s.ligacoes, 0) / businessDays).toFixed(1)
+      ),
       agendPorDiaMedio: parseFloat(
-        (stats.reduce((acc, s) => acc + s.agendPorDia, 0) / Math.max(stats.length, 1)).toFixed(2)
+        (allAgendLeads.length / businessDays).toFixed(2)
       ),
     },
     dailyLeads,

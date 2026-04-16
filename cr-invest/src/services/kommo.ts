@@ -19,6 +19,7 @@
 import { assertReadOnly } from "@/lib/readonly-guard";
 import { prisma } from "@/lib/prisma";
 import { getMockLeads, USE_MOCK } from "@/lib/mock-data";
+import { startSync, updateSync, finishSync } from "@/lib/sync-progress";
 
 // ─── Env vars ─────────────────────────────────────────────────────────────────
 
@@ -96,6 +97,13 @@ const STATUS_MAP: Record<string, string> = {
 function mapStatus(stageName: string, statusId: number): string {
   if (statusId === 142) return "won";
   if (statusId === 143) return "lost";
+  
+  // Tratamento para leads que foram ganhos e movidos para o funil de Pós Vendas
+  const sn = stageName.toLowerCase();
+  if (sn.includes("acompanhamento") || sn.includes("pós venda") || sn.includes("pos venda")) {
+    return "won";
+  }
+
   return STATUS_MAP[stageName] ?? "new";
 }
 
@@ -411,14 +419,25 @@ export async function syncKommoData(opts: SyncOptions = {}): Promise<{ synced: n
 
   // ── Real API ───────────────────────────────────────────────────────────────
 
-  const accessToken = await getValidToken();
+  startSync("kommo");
+
+  let accessToken: string;
+  try {
+    accessToken = await getValidToken();
+  } catch (e: any) {
+    finishSync(e.message);
+    throw e;
+  }
 
   // 1. Cache de usuários e pipelines (uma chamada cada, no início)
+  updateSync("Buscando metadados (usuários, pipelines, tarefas)...", 0, 0);
+  console.log("Fetching users/pipelines/tasks...");
   const [users, pipelines, openTasksMap] = await Promise.all([
     fetchKommoUsers(accessToken),
     fetchKommoPipelines(accessToken),
     fetchOpenTasks(accessToken),
   ]);
+  console.log("Done caching.");
 
   // 2. Pagina pelos leads
   let page = 1;
@@ -438,6 +457,8 @@ export async function syncKommoData(opts: SyncOptions = {}): Promise<{ synced: n
       );
     }
 
+    updateSync(`Buscando página ${page} de leads...`, total, total, page);
+    console.log(`Fetching Kommo Leads page ${page}...`);
     const res = await fetch(url.toString(), {
       headers: { Authorization: `Bearer ${accessToken}` },
     });
@@ -446,13 +467,11 @@ export async function syncKommoData(opts: SyncOptions = {}): Promise<{ synced: n
 
     if (!res.ok) {
       const text = await res.text();
+      const errMsg = `Página ${page}: HTTP ${res.status} — ${text.slice(0, 500)}`;
       await prisma.syncLog.create({
-        data: {
-          source: "kommo",
-          status: "error",
-          message: `Página ${page}: HTTP ${res.status} — ${text.slice(0, 500)}`,
-        },
+        data: { source: "kommo", status: "error", message: errMsg },
       });
+      finishSync(errMsg);
       throw new Error(`Kommo API: ${res.status} ${text}`);
     }
 
@@ -461,7 +480,69 @@ export async function syncKommoData(opts: SyncOptions = {}): Promise<{ synced: n
 
     if (items.length === 0) break;
 
+    updateSync(`Pág. ${page}: ${items.length} leads recebidos, buscando contatos...`, 0, 0, page);
+
+    // -- BUSCA TELEFONES DOS CONTATOS VINCULADOS --
+    const contactIds = new Set<number>();
     for (const item of items) {
+      for (const c of item._embedded?.contacts ?? []) {
+        if (c.id) contactIds.add(c.id);
+      }
+    }
+
+    const contactPhonesMap: Record<number, string[]> = {};
+    const cIdsArray = Array.from(contactIds);
+    if (cIdsArray.length > 0) {
+      try {
+        const chunkSize = 50;
+        const totalChunks = Math.ceil(cIdsArray.length / chunkSize);
+        for (let i = 0; i < cIdsArray.length; i += chunkSize) {
+          const chunkIdx = Math.floor(i / chunkSize) + 1;
+          updateSync(`Pág. ${page}: buscando contatos (${chunkIdx}/${totalChunks})...`, 0, 0, page);
+          const chunk = cIdsArray.slice(i, i + chunkSize);
+          const idQuery = chunk.map((id) => `filter[id][]=${id}`).join("&");
+          const cRes = await fetch(`${BASE()}/contacts?${idQuery}`, {
+            headers: { Authorization: `Bearer ${accessToken}` },
+          });
+          if (cRes.ok) {
+            const cJson = await cRes.json();
+            const contacts = cJson._embedded?.contacts ?? [];
+            for (const contact of contacts) {
+              const phones: string[] = [];
+              for (const cf of contact.custom_fields_values ?? []) {
+                const fname = (cf.field_name || cf.name || "").toLowerCase();
+                const fcode = (cf.field_code || "").toUpperCase();
+                
+                if (fname.includes("telefone") || fname.includes("tel") || fcode === "PHONE") {
+                  for (const val of cf.values ?? []) {
+                    if (val.value) phones.push(val.value.replace(/\D/g, ""));
+                  }
+                }
+              }
+              contactPhonesMap[contact.id] = phones.filter((p) => p.length >= 8);
+            }
+          }
+        }
+      } catch (e) {
+        console.error("Error fetching contacts", e);
+      }
+    }
+
+    // ── Captura syncedAt ANTES do upsert para comparar com kommo updated_at ──
+    // Se feito depois, syncedAt = agora e todos os eventos seriam pulados.
+    const pageIds = items.map((item: any) => String(item.id));
+    const existingSynced = await prisma.lead.findMany({
+      where: { id: { in: pageIds } },
+      select: { id: true, syncedAt: true },
+    });
+    const syncedAtMap = new Map(existingSynced.map(l => [l.id, l.syncedAt]));
+
+    updateSync(`Pág. ${page}: salvando ${items.length} leads no banco...`, 0, 0, page);
+
+    // Prepara os dados de todos os leads da página antes de abrir a transação.
+    // Uma $transaction por página = 1 conexão DB por página (em vez de N conexões),
+    // o que evita esgotamento do pool do Supabase pgbouncer durante syncs longos.
+    const upsertOps = items.map((item: any) => {
       const pipelineId = item.pipeline_id ?? null;
       const pipeline = pipelineId != null ? pipelines[pipelineId] : null;
       const stageName = pipeline?.statuses[item.status_id] ?? "";
@@ -479,7 +560,6 @@ export async function syncKommoData(opts: SyncOptions = {}): Promise<{ synced: n
 
       const custom = parseCustomFields(item.custom_fields_values ?? []);
 
-      // Deriva campaignName de utm_campaign custom field ou pipeline name
       const campaignName = custom.utmCampaign ?? pipeline?.name ?? null;
       const campaignId = custom.utmCampaign
         ? `utm:${custom.utmCampaign}`
@@ -489,7 +569,15 @@ export async function syncKommoData(opts: SyncOptions = {}): Promise<{ synced: n
 
       const nextTaskAt = openTasksMap[String(item.id)] ?? null;
 
-      await prisma.lead.upsert({
+      const phonesSet = new Set<string>();
+      for (const c of item._embedded?.contacts ?? []) {
+        if (contactPhonesMap[c.id]) {
+          for (const p of contactPhonesMap[c.id]) phonesSet.add(p);
+        }
+      }
+      const leadPhones = Array.from(phonesSet);
+
+      return prisma.lead.upsert({
         where: { id: String(item.id) },
         update: {
           status,
@@ -502,6 +590,7 @@ export async function syncKommoData(opts: SyncOptions = {}): Promise<{ synced: n
           noShow: custom.noShow ?? false,
           isReagendado: custom.isReagendado ?? false,
           contactAttempts: custom.contactAttempts ?? 0,
+          leadPhones,
           syncedAt: new Date(),
         },
         create: {
@@ -511,9 +600,6 @@ export async function syncKommoData(opts: SyncOptions = {}): Promise<{ synced: n
           campaignName,
           createdAt: new Date(item.created_at * 1000),
           arrivalAt: new Date(item.created_at * 1000),
-          // Timestamps de etapa não são fornecidos diretamente pela API de leads.
-          // Para preencher contactedAt/qualifiedAt/scheduledAt/meetingAt é necessário
-          // buscar GET /leads/{id}/events, o que é feito via syncLeadHistory() abaixo.
           contactedAt: null,
           qualifiedAt: null,
           scheduledAt: null,
@@ -529,11 +615,46 @@ export async function syncKommoData(opts: SyncOptions = {}): Promise<{ synced: n
           noShow: custom.noShow ?? false,
           isReagendado: custom.isReagendado ?? false,
           contactAttempts: custom.contactAttempts ?? 0,
+          leadPhones,
           syncedAt: new Date(),
         },
       });
+    });
 
-      total++;
+    // Executa todos os upserts da página em uma única transação
+    await prisma.$transaction(upsertOps, { timeout: 30000 });
+    total += items.length;
+
+    // ── Enriquecer leads com timestamps de etapa (events API) ──
+    const leadsToEnrich = items.filter((item: any) => {
+      const lastSynced = syncedAtMap.get(String(item.id));
+      const kommoUpdated = new Date(item.updated_at * 1000);
+      return !(lastSynced && kommoUpdated <= lastSynced);
+    });
+
+    for (let ei = 0; ei < leadsToEnrich.length; ei++) {
+      const item = leadsToEnrich[ei];
+      updateSync(
+        `Pág. ${page}: histórico ${ei + 1}/${leadsToEnrich.length} (${total} leads)`,
+        ei + 1,
+        leadsToEnrich.length,
+        page
+      );
+
+      try {
+        const res = await fetch(
+          `${BASE()}/events?filter[entity]=lead&filter[entity_id][]=${item.id}&limit=250`,
+          { headers: { Authorization: `Bearer ${accessToken}` } }
+        );
+        if (res.ok && res.status !== 204) {
+          const json = await res.json();
+          await processLeadEvents(String(item.id), json._embedded?.events ?? [], pipelines, users);
+        }
+      } catch (e: any) {
+        console.error(`processLeadEvents failed for ${item.id}:`, e.message);
+      }
+      // 250ms entre chamadas → ~4 req/s, margem confortável abaixo do limite de 7 req/s
+      await new Promise(r => setTimeout(r, 250));
     }
 
     if (items.length < 250) break;
@@ -543,75 +664,82 @@ export async function syncKommoData(opts: SyncOptions = {}): Promise<{ synced: n
     await new Promise((r) => setTimeout(r, 150));
   }
 
+  const successMsg = `${total} leads sincronizados em ${page} página(s)${opts.since ? " (incremental)" : " (completo)"}`;
   await prisma.syncLog.create({
-    data: {
-      source: "kommo",
-      status: "success",
-      message: `${total} leads sincronizados em ${page} página(s)${opts.since ? " (incremental)" : " (completo)"}`,
-    },
+    data: { source: "kommo", status: "success", message: successMsg },
   });
+  finishSync();
 
   return { synced: total, pages: page };
 }
 
 /**
- * syncLeadHistory — enriquece um lead específico com timestamps de mudança de etapa.
- *
- * Usa GET /leads/{id}/events (changelog) para derivar:
- *   contactedAt, qualifiedAt, scheduledAt, meetingAt
- *
- * Deve ser chamada pontualmente (não em lote) para não exceder rate limits.
+ * processLeadEvents — processa a lista de eventos já carregados para um lead
+ * e persiste os timestamps derivados no banco.
  */
-export async function syncLeadHistory(leadId: string): Promise<void> {
-  assertReadOnly("GET");
-
-  if (USE_MOCK) return;
-
-  const accessToken = await getValidToken();
-  const [pipelines, res] = await Promise.all([
-    fetchKommoPipelines(accessToken),
-    fetch(`${BASE()}/leads/${leadId}/events?type=lead_status_changed&limit=250`, {
-      headers: { Authorization: `Bearer ${accessToken}` },
-    }),
-  ]);
-
-  if (!res.ok) return;
-
-  const json = await res.json();
-  const events: any[] = json._embedded?.events ?? [];
-
+async function processLeadEvents(
+  leadId: string,
+  events: any[],
+  pipelines: Record<string, { name: string; statuses: Record<number, string> }>,
+  users: Record<number, { name: string }>
+): Promise<void> {
   if (events.length === 0) return;
 
   const timestamps: {
     contactedAt?: Date;
     qualifiedAt?: Date;
     scheduledAt?: Date;
+    scheduledBy?: string | null;
     meetingAt?: Date;
+    reagendadoAt?: Date;
   } = {};
 
-  // Percorre eventos em ordem cronológica (mais antigo primeiro)
   const sorted = [...events].sort((a, b) => a.created_at - b.created_at);
 
   for (const ev of sorted) {
     const afterStatusId = ev.value_after?.[0]?.lead_status?.id ?? null;
     if (!afterStatusId) continue;
 
-    // Tenta resolver o nome do status através de qualquer pipeline
     let stageName = "";
     for (const p of Object.values(pipelines)) {
-      if (p.statuses[afterStatusId]) {
-        stageName = p.statuses[afterStatusId];
-        break;
-      }
+      if (p.statuses[afterStatusId]) { stageName = p.statuses[afterStatusId]; break; }
     }
 
     const status = mapStatus(stageName, afterStatusId);
     const ts = new Date(ev.created_at * 1000);
+    const sn = stageName.toLowerCase();
 
     if (status === "contacted" && !timestamps.contactedAt) timestamps.contactedAt = ts;
     if (status === "qualified"  && !timestamps.qualifiedAt)  timestamps.qualifiedAt = ts;
-    if (status === "scheduled"  && !timestamps.scheduledAt)  timestamps.scheduledAt = ts;
-    if (status === "meeting"    && !timestamps.meetingAt)    timestamps.meetingAt = ts;
+
+    const isReuniao = sn.includes("reunião realizada") || sn.includes("reuniao realizada");
+    if (isReuniao && !timestamps.meetingAt) timestamps.meetingAt = ts;
+
+    const isConfirmada = sn.includes("confirmada") || (sn.includes("agendado") && !sn.includes("2°"));
+    if (isConfirmada) {
+      if (!timestamps.scheduledAt) {
+        timestamps.scheduledAt = ts;
+        const createdBy = ev.created_by ?? null;
+        timestamps.scheduledBy = createdBy === 0
+          ? "IA"
+          : createdBy != null ? (users[createdBy]?.name ?? `user-${createdBy}`) : null;
+      } else {
+        timestamps.reagendadoAt = ts;
+      }
+    }
+
+    if ((timestamps.qualifiedAt || timestamps.scheduledAt) && !timestamps.contactedAt) {
+      timestamps.contactedAt = timestamps.qualifiedAt || timestamps.scheduledAt;
+    }
+
+    if (sn.includes("reagendamento")) {
+      (timestamps as any).noShow = true;
+      (timestamps as any).noShowAt = ts;
+    }
+    if (sn.includes("no show") || sn.includes("noshow")) {
+      (timestamps as any).noShow = true;
+      if (!(timestamps as any).noShowAt) (timestamps as any).noShowAt = ts;
+    }
   }
 
   if (Object.keys(timestamps).length > 0) {
@@ -620,6 +748,29 @@ export async function syncLeadHistory(leadId: string): Promise<void> {
       data: { ...timestamps, syncedAt: new Date() },
     });
   }
+}
+
+/**
+ * syncLeadHistory — enriquece um lead específico buscando seus eventos do Kommo.
+ * Usado pontualmente (ex: webhook). Para sync em lote use syncKommoData que
+ * agrupa múltiplos leads por chamada.
+ */
+export async function syncLeadHistory(leadId: string): Promise<void> {
+  assertReadOnly("GET");
+  if (USE_MOCK) return;
+
+  const accessToken = await getValidToken();
+  const [pipelines, users, res] = await Promise.all([
+    fetchKommoPipelines(accessToken),
+    fetchKommoUsers(accessToken),
+    fetch(`${BASE()}/events?filter[entity]=lead&filter[entity_id][]=${leadId}&limit=250`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    }),
+  ]);
+
+  if (!res.ok || res.status === 204) return;
+  const json = await res.json();
+  await processLeadEvents(leadId, json._embedded?.events ?? [], pipelines, users);
 }
 
 /** Verifica se há um token válido salvo (para mostrar status na UI) */

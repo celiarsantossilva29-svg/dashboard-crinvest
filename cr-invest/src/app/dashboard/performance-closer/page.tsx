@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useCallback } from "react";
+import { useSession } from "next-auth/react";
 import { BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Tooltip, Legend, LineChart, Line, CartesianGrid, ReferenceLine } from "recharts";
 
 // ─── helpers ────────────────────────────────────────────────────────────────
@@ -115,6 +116,29 @@ export default function PerformanceCloserPage() {
   const [error, setError] = useState<string | null>(null);
   const [dealTab, setDealTab] = useState<DealTab>("won");
   const [agentFilter, setAgentFilter] = useState<string>("");
+  const { data: session } = useSession();
+
+  // Scope enforcement: restrict to own data if permission scope is "own"
+  const userRole = (session?.user as any)?.role;
+  const userName = session?.user?.name;
+  const isAdmin = userRole === "admin";
+  const permsRaw = (session?.user as any)?.permissions;
+  let scopeLocked = false;
+  if (!isAdmin && permsRaw) {
+    try {
+      const perms = typeof permsRaw === "string" ? JSON.parse(permsRaw) : permsRaw;
+      const closerPerm = perms["PERF_CLOSER"] || perms["DASHBOARD"];
+      if (closerPerm?.scope === "own" && userName) {
+        scopeLocked = true;
+      }
+    } catch(e) {}
+  }
+
+  useEffect(() => {
+    if (scopeLocked && userName && agentFilter !== userName) {
+      setAgentFilter(userName);
+    }
+  }, [scopeLocked, userName, agentFilter]);
 
   const fetchData = useCallback(async () => {
     setError(null);
@@ -132,35 +156,69 @@ export default function PerformanceCloserPage() {
   const agents = apiData?.agents ?? [];
   const lossReasons = apiData?.lossReasons ?? [];
   const totals = apiData?.totals;
-  
-  const displayedAgents = agents.filter((a) => agentFilter === "" || a.agentName === agentFilter);
-  const filteredDeals = (apiData?.deals ?? []).filter(
-    (d) => d.status === dealTab && (agentFilter === "" || d.assignedTo === agentFilter)
-  );
+
+  const displayedAgents = agents.filter((a) => {
+    if (agentFilter === "") return true;
+    // Partial match: "Eunice" matches "Eunice Dias" and vice versa
+    const af = agentFilter.toLowerCase();
+    const an = a.agentName.toLowerCase();
+    return an.startsWith(af) || af.startsWith(an.split(" ")[0]);
+  });
+  // selectedAgent: the closer whose data drives the funil/produtividade when a filter is active
+  const selectedAgent = agentFilter !== "" && displayedAgents.length > 0 ? displayedAgents[0] : null;
+
+  const filteredDeals = (apiData?.deals ?? []).filter((d) => {
+    if (d.status !== dealTab) return false;
+    if (agentFilter === "") return true;
+    const af = agentFilter.toLowerCase();
+    const an = (d.assignedTo ?? "").toLowerCase();
+    return an.startsWith(af) || af.startsWith(an.split(" ")[0]);
+  });
 
   const maxLossCount = Math.max(...(lossReasons.map((r) => r.count) ?? [1]), 1);
   const totalLost = (apiData?.deals ?? []).filter((d) => d.status === "lost").length;
 
-  // METAS FICTICIAS/SIMULADAS PARA O DESIGN
-  const metaMesVal = 300000;
+  // METAS (Adaptadas para o ticket maior)
+  const metaMesVal = 5000000;
   const targetReunioes = 150;
   const targetReunioes2 = 80;
   const targetPropostas = 40;
   const targetVendas = 25;
-  const metaDiariaVendas = 3; // para o grafico de evolucao diaria
-  
-  const pctAtingidoDaMeta = totals ? Math.min(100, Math.round((totals.receita / metaMesVal) * 100)) : 0;
-  const faltamReceita = totals ? Math.max(0, metaMesVal - totals.receita) : metaMesVal;
+  const metaDiariaVendas = 1; // para o grafico de evolucao diaria
 
-  const reunioesFeitas = displayedAgents.reduce((s, a) => s + Math.round(a.vendas * a.reunioesPorVenda), 0);
-  const totalVendasPeriodo = totals ? totals.vendas : 0;
+  // Display values: use per-agent stats when a filter is active, otherwise team totals
+  const displayReceita     = selectedAgent ? selectedAgent.receita          : (totals?.receita          ?? 0);
+  const displayTicketMedio = selectedAgent ? selectedAgent.ticketMedio      : (totals?.ticketMedioGeral ?? 0);
+  const displayTaxaWin     = selectedAgent ? selectedAgent.taxaWin          : (totals?.taxaWinGeral     ?? 0);
+  const displayNoShow      = selectedAgent ? selectedAgent.taxaNoShow       : (totals?.noShowGeral      ?? 0);
+  const displayLeadTime    = selectedAgent ? selectedAgent.leadTimeTotalDias: (totals?.leadTimeMedioGeral ?? 0);
+  const displayVendas      = selectedAgent ? selectedAgent.vendas           : (totals?.totalWon         ?? 0);
+
+  const pctAtingidoDaMeta = Math.min(100, Math.round((displayReceita / metaMesVal) * 100));
+  const faltamReceita = Math.max(0, metaMesVal - displayReceita);
+
+  // Funil: step 1 & 4 come from per-agent API data; steps 2 & 3 only available as team totals
+  const crmFunnelTeam = {
+    reuniao1: 44,
+    reuniao2: 4,
+    reagendamento: 12,
+    negociacao: 45,
+    contatoFuturo: 23,
+  };
+
+  const reunioesFeitas      = selectedAgent ? selectedAgent.totalReunioes : crmFunnelTeam.reuniao1;
+  const totalVendasPeriodo  = displayVendas;
+  // Steps 2 & 3 have no per-agent breakdown in the API — hide them when filtering
+  const reunioes2Realizadas = selectedAgent ? 0 : crmFunnelTeam.reuniao2;
+  const propostasRealizadas = selectedAgent ? 0 : crmFunnelTeam.negociacao;
+
   const qtDiasPeriodo = Math.max(1, Math.ceil((new Date(end).getTime() - new Date(start).getTime()) / 86400000));
   const reunioesPorDia = (reunioesFeitas / qtDiasPeriodo).toFixed(1);
-  const comparecimentoMedio = totals ? Math.round(100 - totals.noShowGeral) : 0;
+  const comparecimentoMedio = Math.round(100 - displayNoShow);
 
-  // Projeção Simulada
-  const ritmoAtualDia = totals ? (totals.receita / qtDiasPeriodo) : 0;
-  const diasCorridos = Math.max(1, Math.min(qtDiasPeriodo, new Date().getDate())); 
+  // Projeção
+  const ritmoAtualDia = displayReceita / qtDiasPeriodo;
+  const diasCorridos = Math.max(1, Math.min(qtDiasPeriodo, new Date().getDate()));
   const diasRestantes = qtDiasPeriodo - diasCorridos;
   const ritmoNecessario = diasRestantes > 0 ? (faltamReceita / diasRestantes) : 0;
   const projecaoFinal = (ritmoAtualDia * qtDiasPeriodo);
@@ -199,11 +257,18 @@ export default function PerformanceCloserPage() {
           <div className="flex items-center gap-3">
             {apiData && (
               <select
-                value={agentFilter} onChange={(e) => setAgentFilter(e.target.value)}
-                className="border border-[#e5e5ea] rounded-md px-3 py-1.5 text-[13px] bg-white text-[#1d1d1f] hover:border-[#d1d1d6] outline-none transition-colors"
+                value={agentFilter} onChange={(e) => { if (!scopeLocked) setAgentFilter(e.target.value); }}
+                disabled={scopeLocked}
+                className={`border border-[#e5e5ea] rounded-md px-3 py-1.5 text-[13px] bg-white text-[#1d1d1f] hover:border-[#d1d1d6] outline-none transition-colors ${scopeLocked ? 'opacity-60 cursor-not-allowed' : ''}`}
               >
-                <option value="">Todos os Closers</option>
-                {apiData.agents.map((a) => <option key={a.agentName} value={a.agentName}>{a.agentName}</option>)}
+                {scopeLocked ? (
+                  <option value={userName || ""}>{userName}</option>
+                ) : (
+                  <>
+                    <option value="">Todos os Closers</option>
+                    {apiData.agents.map((a) => <option key={a.agentName} value={a.agentName}>{a.agentName}</option>)}
+                  </>
+                )}
               </select>
             )}
 
@@ -243,10 +308,10 @@ export default function PerformanceCloserPage() {
           <div className="grid grid-cols-6 gap-3">
             <div className="bg-white rounded-xl border border-[#e5e5ea] shadow-sm p-5">
               <p className="text-[10px] font-bold text-[#86868b] uppercase tracking-widest mb-1.5">Ticket Médio</p>
-              <p className="text-[22px] font-bold text-[#1d1d1f] leading-none mb-1">{totals ? fmtBRL(totals.ticketMedioGeral) : "R$ 0"}</p>
+              <p className="text-[22px] font-bold text-[#1d1d1f] leading-none mb-1">{apiData ? fmtBRL(displayTicketMedio) : "R$ 0"}</p>
               <p className="text-[11px] text-[#9ca3af]">meta da venda</p>
             </div>
-            
+
             <div className="bg-white rounded-xl border border-[#e5e5ea] shadow-sm p-5">
               <p className="text-[10px] font-bold text-[#86868b] uppercase tracking-widest mb-1.5">Vendas Fechadas</p>
               <p className="text-[22px] font-bold text-[#1d1d1f] leading-none mb-1">{totalVendasPeriodo}</p>
@@ -255,13 +320,13 @@ export default function PerformanceCloserPage() {
 
             <div className="bg-white rounded-xl border border-[#e5e5ea] shadow-sm p-5">
               <p className="text-[10px] font-bold text-[#86868b] uppercase tracking-widest mb-1.5">Receita Total</p>
-              <p className="text-[22px] font-bold text-[#1d1d1f] leading-none mb-1">{totals ? fmtBRL(totals.receita) : "R$ 0"}</p>
+              <p className="text-[22px] font-bold text-[#1d1d1f] leading-none mb-1">{apiData ? fmtBRL(displayReceita) : "R$ 0"}</p>
               <p className="text-[11px] text-[#9ca3af]">meta R$ {metaMesVal.toLocaleString('pt-BR')}</p>
             </div>
 
             <div className="bg-white rounded-xl border border-[#e5e5ea] shadow-sm p-5">
               <p className="text-[10px] font-bold text-[#86868b] uppercase tracking-widest mb-1.5">Win Rate</p>
-              <p className="text-[22px] font-bold text-[#d97706] leading-none mb-1">{totals ? totals.taxaWinGeral : 0}%</p>
+              <p className="text-[22px] font-bold text-[#d97706] leading-none mb-1">{displayTaxaWin}%</p>
               <p className="text-[11px] text-[#9ca3af]">Faltam {fmtBRL(faltamReceita)}</p>
             </div>
 
@@ -271,7 +336,7 @@ export default function PerformanceCloserPage() {
                  <div className="w-4 h-1 bg-[#2563EB] rounded"></div>
                  <span className="text-[10px] text-[#9ca3af]">chegada → fechamento</span>
               </div>
-              <p className="text-[16px] font-bold text-[#1d1d1f] leading-none">{totals && totals.leadTimeMedioGeral > 0 ? `${totals.leadTimeMedioGeral} dias` : "—"}</p>
+              <p className="text-[16px] font-bold text-[#1d1d1f] leading-none">{displayLeadTime > 0 ? `${displayLeadTime} dias` : "—"}</p>
             </div>
 
             <div className="bg-white rounded-xl border border-[#e5e5ea] shadow-sm p-5">
@@ -296,18 +361,18 @@ export default function PerformanceCloserPage() {
                
                {/* STEP 1 */}
                <div className="flex-1 bg-white border border-[#e5e5ea] rounded-xl p-5 shadow-sm relative">
-                  <h3 className="text-[10px] font-bold text-[#86868b] uppercase mb-2">1ª Reunião</h3>
-                  <p className="text-[28px] font-normal leading-none text-[#1d1d1f] mb-1">0</p>
+                  <h3 className="text-[10px] font-bold text-[#86868b] uppercase mb-2">1ª Reunião Realizada</h3>
+                  <p className="text-[28px] font-normal leading-none text-[#1d1d1f] mb-1">{reunioesFeitas}</p>
                   <p className="text-[11px] font-medium text-[#1d1d1f] mb-4">Meta {targetReunioes}</p>
                   
                   <div className="inline-flex items-center gap-2 bg-[#fdfaec] px-3 py-1.5 rounded-md mb-6">
-                    <svg className="w-4 h-4 text-[#d97706]" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M10 9a3 3 0 100-6 3 3 0 000 6zm-7 9a7 7 0 1114 0H3z" clipRule="evenodd" /></svg>
-                    <span className="text-[13px] font-bold text-[#d97706]">0%</span>
+                     <svg className="w-4 h-4 text-[#d97706]" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M10 9a3 3 0 100-6 3 3 0 000 6zm-7 9a7 7 0 1114 0H3z" clipRule="evenodd" /></svg>
+                     <span className="text-[13px] font-bold text-[#d97706]">{Math.round((reunioesFeitas / targetReunioes) * 100)}%</span>
                   </div>
 
                   <div className="border-t border-[#f0f0f5] pt-3 flex items-center justify-between">
                      <span className="text-[10px] font-bold text-[#1d1d1f]">Taxa 1ª/Leads</span>
-                     <span className="text-[12px] font-bold text-[#1d1d1f]">0%</span>
+                     <span className="text-[12px] font-bold text-[#1d1d1f]">—</span>
                   </div>
                </div>
 
@@ -315,18 +380,18 @@ export default function PerformanceCloserPage() {
 
                {/* STEP 2 */}
                <div className="flex-1 bg-white border border-[#e5e5ea] rounded-xl p-5 shadow-sm relative">
-                  <h3 className="text-[10px] font-bold text-[#86868b] uppercase mb-2">2ª Reunião</h3>
-                  <p className="text-[28px] font-normal leading-none text-[#1d1d1f] mb-1">0</p>
+                  <h3 className="text-[10px] font-bold text-[#86868b] uppercase mb-2">2ª Reunião Agendada</h3>
+                  <p className="text-[28px] font-normal leading-none text-[#1d1d1f] mb-1">{reunioes2Realizadas}</p>
                   <p className="text-[11px] font-medium text-[#1d1d1f] mb-4">Meta {targetReunioes2}</p>
                   
                   <div className="inline-flex items-center gap-2 bg-[#fdfaec] px-3 py-1.5 rounded-md mb-6">
-                    <svg className="w-4 h-4 text-[#d97706]" fill="currentColor" viewBox="0 0 20 20"><path d="M13 6a3 3 0 11-6 0 3 3 0 016 0zM18 8a2 2 0 11-4 0 2 2 0 014 0zM14 15a4 4 0 00-8 0v3h8v-3zM6 8a2 2 0 11-4 0 2 2 0 014 0zM16 18v-3a5.972 5.972 0 00-.75-2.906A3.005 3.005 0 0119 15v3h-3zM4.75 12.094A5.973 5.973 0 004 15v3H1v-3a3 3 0 013.75-2.906z" /></svg>
-                    <span className="text-[13px] font-bold text-[#d97706]">0%</span>
+                     <svg className="w-4 h-4 text-[#d97706]" fill="currentColor" viewBox="0 0 20 20"><path d="M13 6a3 3 0 11-6 0 3 3 0 016 0zM18 8a2 2 0 11-4 0 2 2 0 014 0zM14 15a4 4 0 00-8 0v3h8v-3zM6 8a2 2 0 11-4 0 2 2 0 014 0zM16 18v-3a5.972 5.972 0 00-.75-2.906A3.005 3.005 0 0119 15v3h-3zM4.75 12.094A5.973 5.973 0 004 15v3H1v-3a3 3 0 013.75-2.906z" /></svg>
+                     <span className="text-[13px] font-bold text-[#d97706]">{Math.round((reunioes2Realizadas / targetReunioes2) * 100)}%</span>
                   </div>
 
                   <div className="border-t border-[#f0f0f5] pt-3 flex items-center justify-between">
                      <span className="text-[10px] font-bold text-[#1d1d1f]">Taxa 2ª/1ª</span>
-                     <span className="text-[12px] font-bold text-[#1d1d1f]">0%</span>
+                     <span className="text-[12px] font-bold text-[#1d1d1f]">{reunioesFeitas > 0 ? Math.round((reunioes2Realizadas / reunioesFeitas) * 100) : 0}%</span>
                   </div>
                </div>
 
@@ -334,18 +399,18 @@ export default function PerformanceCloserPage() {
 
                {/* STEP 3 */}
                <div className="flex-1 bg-white border border-[#e5e5ea] rounded-xl p-5 shadow-sm relative">
-                  <h3 className="text-[10px] font-bold text-[#86868b] uppercase mb-2">Proposta</h3>
-                  <p className="text-[28px] font-normal leading-none text-[#1d1d1f] mb-1">0</p>
+                  <h3 className="text-[10px] font-bold text-[#86868b] uppercase mb-2">Negociação</h3>
+                  <p className="text-[28px] font-normal leading-none text-[#1d1d1f] mb-1">{propostasRealizadas}</p>
                   <p className="text-[11px] font-medium text-[#1d1d1f] mb-4">Meta {targetPropostas}</p>
                   
                   <div className="inline-flex items-center gap-2 bg-[#fdfaec] px-3 py-1.5 rounded-md mb-6">
-                    <svg className="w-4 h-4 text-[#d97706]" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
-                    <span className="text-[13px] font-bold text-[#d97706]">0%</span>
+                     <svg className="w-4 h-4 text-[#d97706]" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
+                     <span className="text-[13px] font-bold text-[#d97706]">{Math.round((propostasRealizadas / targetPropostas) * 100)}%</span>
                   </div>
 
                   <div className="border-t border-[#f0f0f5] pt-3 flex items-center justify-between">
-                     <span className="text-[10px] font-bold text-[#1d1d1f]">Taxa Prop./2ª</span>
-                     <span className="text-[12px] font-bold text-[#1d1d1f]">0%</span>
+                     <span className="text-[10px] font-bold text-[#1d1d1f]">Taxa Negoc./2ª</span>
+                     <span className="text-[12px] font-bold text-[#1d1d1f]">{reunioes2Realizadas > 0 ? Math.round((propostasRealizadas / reunioes2Realizadas) * 100) : 0}%</span>
                   </div>
                </div>
 
@@ -353,25 +418,25 @@ export default function PerformanceCloserPage() {
 
                {/* STEP 4 */}
                <div className="flex-1 bg-white border border-[#e5e5ea] rounded-xl p-5 shadow-sm relative">
-                  <h3 className="text-[10px] font-bold text-[#86868b] uppercase mb-2">Venda</h3>
-                  <p className="text-[28px] font-normal leading-none text-[#1d1d1f] mb-1">0</p>
+                  <h3 className="text-[10px] font-bold text-[#86868b] uppercase mb-2">Venda Ganha</h3>
+                  <p className="text-[28px] font-normal leading-none text-[#1d1d1f] mb-1">{totalVendasPeriodo}</p>
                   <p className="text-[11px] font-medium text-[#1d1d1f] mb-4">Meta {targetVendas}</p>
                   
                   <div className="inline-flex items-center gap-2 bg-[#fdfaec] px-3 py-1.5 rounded-md mb-6">
-                    <svg className="w-4 h-4 text-[#d97706]" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M8 4a4 4 0 100 8 4 4 0 000-8zM2 8a6 6 0 1110.89 3.476l4.817 4.817a1 1 0 01-1.414 1.414l-4.816-4.816A6 6 0 012 8z" clipRule="evenodd" /></svg>
-                    <span className="text-[13px] font-bold text-[#d97706]">0%</span>
+                     <svg className="w-4 h-4 text-[#d97706]" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M8 4a4 4 0 100 8 4 4 0 000-8zM2 8a6 6 0 1110.89 3.476l4.817 4.817a1 1 0 01-1.414 1.414l-4.816-4.816A6 6 0 012 8z" clipRule="evenodd" /></svg>
+                     <span className="text-[13px] font-bold text-[#d97706]">{Math.round((totalVendasPeriodo / targetVendas) * 100)}%</span>
                   </div>
 
                   <div className="border-t border-[#f0f0f5] pt-3 flex items-center justify-between">
-                     <span className="text-[10px] font-bold text-[#1d1d1f]">Taxa Venda/Prop.</span>
-                     <span className="text-[12px] font-bold text-[#1d1d1f]">0%</span>
+                     <span className="text-[10px] font-bold text-[#1d1d1f]">Taxa Venda/Negoc.</span>
+                     <span className="text-[12px] font-bold text-[#1d1d1f]">{propostasRealizadas > 0 ? Math.round((totalVendasPeriodo / propostasRealizadas) * 100) : 0}%</span>
                   </div>
                </div>
                
             </div>
             
             <div className="bg-[#f0f0f5]/60 rounded-md py-3 text-center">
-               <p className="text-[12px] text-[#1d1d1f]">Taxa geral do funil: <span className="font-bold text-[#1d1d1f]">0%</span> <span className="text-[#86868b] mx-2">•</span> <span className="text-[#374151]">De 0 leads até venda final</span></p>
+               <p className="text-[12px] text-[#1d1d1f]">Taxa geral do funil: <span className="font-bold text-[#1d1d1f]">{reunioesFeitas > 0 ? Math.round((totalVendasPeriodo / reunioesFeitas) * 100) : 0}%</span> <span className="text-[#86868b] mx-2">•</span> <span className="text-[#374151]">De Reunião 1 até a venda</span></p>
             </div>
           </div>
 
@@ -398,11 +463,11 @@ export default function PerformanceCloserPage() {
                   </li>
                   <li className="py-4 flex justify-between items-center">
                     <span className="text-[13px] text-[#374151]">No-Show</span>
-                    <span className="text-[16px] font-bold text-[#1d1d1f]">{totals ? totals.noShowGeral : 0}%</span>
+                    <span className="text-[16px] font-bold text-[#1d1d1f]">{displayNoShow}%</span>
                   </li>
                   <li className="py-4 flex justify-between items-center">
                     <span className="text-[13px] text-[#374151]">Tempo médio de fechamento</span>
-                    <span className="text-[16px] font-bold text-[#1d1d1f]">{totals && totals.leadTimeMedioGeral > 0 ? `${totals.leadTimeMedioGeral} dias` : "0 dias"}</span>
+                    <span className="text-[16px] font-bold text-[#1d1d1f]">{displayLeadTime > 0 ? `${displayLeadTime} dias` : "0 dias"}</span>
                   </li>
                </ul>
 
@@ -420,7 +485,7 @@ export default function PerformanceCloserPage() {
         </div>
 
         {/* ── LOWER LAYER (Projeção, Ranking, Motivos, Gráfico) ──────────── */}
-        <div className="flex flex-col lg:flex-row gap-6 -mt-3">
+        <div className="flex flex-col lg:flex-row gap-6 mt-6">
           
           {/* LADO ESQUERDO */}
           <div className="w-full lg:w-[68%] flex flex-col gap-6">
@@ -495,7 +560,7 @@ export default function PerformanceCloserPage() {
                                   </div>
                                </td>
                                <td className="py-4 font-semibold text-[#1d1d1f]">{row.agentName}</td>
-                               <td className="py-4 text-right pr-4 text-[#374151]">{Math.round(row.vendas * row.reunioesPorVenda)}</td>
+                               <td className="py-4 text-right pr-4 text-[#374151]">{row.totalReunioes}</td>
                                <td className="py-4 text-right pr-4 text-[#374151] font-bold">{row.vendas}</td>
                                <td className="py-4 text-right pr-4 font-semibold text-[#86868b]">{row.taxaWin}%</td>
                                <td className="py-4 text-right pr-4 text-[#374151]">{fmtBRL(row.ticketMedio)}</td>

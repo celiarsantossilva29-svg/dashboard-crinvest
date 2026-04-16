@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useCallback } from "react";
+import { useSession } from "next-auth/react";
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
@@ -77,6 +78,10 @@ const LBL_STYLE: React.CSSProperties = {
 // ─── page ────────────────────────────────────────────────────────────────────
 
 export default function DashboardPage() {
+  const { data: session } = useSession();
+  const userRole = (session?.user as any)?.role ?? "admin";
+  const showTrafico = userRole !== "SDR";
+
   const { start: ds, end: de } = getMonthRange();
   const [start, setStart] = useState(ds);
   const [end, setEnd] = useState(de);
@@ -85,24 +90,26 @@ export default function DashboardPage() {
   const [funil, setFunil] = useState<any>(null);
   const [vendas, setVendas] = useState<any>(null);
   const [prospeccao, setProspeccao] = useState<any>(null);
-  const [ads, setAds] = useState<any>(null);
+  const [adSpendInput, setAdSpendInput] = useState<string>("");
   const [discadores, setDiscadores] = useState<any>(null);
   const [closers, setClosers] = useState<any>(null);
   const [syncStatus, setSyncStatus] = useState<any>(null);
+  const [sdr, setSdr] = useState<any>(null);
 
   const fetchAll = useCallback(async () => {
-    const [m, f, v, p, a, d, c, s] = await Promise.all([
+    const [m, f, v, p, a, d, c, sSync, sdrData] = await Promise.all([
       apiFetch<any>("/api/kpis/meta"),
       apiFetch<any>(`/api/kpis/funil?start=${start}&end=${end}`),
       apiFetch<any>(`/api/kpis/vendas?start=${start}&end=${end}`),
       apiFetch<any>(`/api/kpis/prospeccao?start=${start}&end=${end}`),
-      apiFetch<any>(`/api/kpis/ads?start=${start}&end=${end}`),
+      apiFetch<string>(`/api/settings?key=ad_spend_${start.substring(0, 7)}`),
       apiFetch<any>(`/api/kpis/discadores?start=${start}&end=${end}`),
       apiFetch<any>(`/api/kpis/performance-closer?start=${start}&end=${end}`),
       apiFetch<any>("/api/sync/status"),
+      apiFetch<any>(`/api/kpis/performance-sdr?start=${start}&end=${end}`),
     ]);
     setMeta(m); setFunil(f); setVendas(v); setProspeccao(p);
-    setAds(a); setDiscadores(d); setClosers(c); setSyncStatus(s);
+    setAdSpendInput(a ?? ""); setDiscadores(d); setClosers(c); setSyncStatus(sSync); setSdr(sdrData);
   }, [start, end]);
 
   useEffect(() => { fetchAll(); }, [fetchAll]);
@@ -132,6 +139,23 @@ export default function DashboardPage() {
 
   // funnel stages
   const maxFunil = Math.max(funil?.leadsGerados ?? 1, 1);
+  const totalVendasApp = Math.max(funil?.vendas ?? 1, 1);
+
+  // Calculo de Tráfego Manual
+  const parsedAdSpend = parseFloat(adSpendInput) || 0;
+  const cacCalculado = parsedAdSpend / totalVendasApp;
+  const cplCalculado = parsedAdSpend / maxFunil;
+
+  const handleSaveAdSpend = async () => {
+    try {
+      await fetch('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key: `ad_spend_${start.substring(0, 7)}`, value: adSpendInput })
+      });
+      alert('Investimento salvo com sucesso!');
+    } catch(e) {}
+  };
 
   // dialer
   const totalCalls = discadores?.totalCalls ?? 0;
@@ -144,9 +168,6 @@ export default function DashboardPage() {
     .slice()
     .sort((a: any, b: any) => b.totalCalls - a.totalCalls);
 
-  // 3C Plus breakdown
-  const threecAgents: any[] = agentRows.filter((a: any) => a.source === "threec");
-  const totalThreec = threecAgents.reduce((s: number, a: any) => s + a.totalCalls, 0);
 
   // closer ranking
   const sortedClosers: any[] = [...(closers?.agents ?? [])].sort(
@@ -196,6 +217,21 @@ export default function DashboardPage() {
                 padding: "4px 8px", fontSize: 12, color: "#374151", background: "white",
               }}
             />
+            
+            {showTrafico && (<>
+              <div className="w-px h-6 bg-[#E5E7EB] mx-1"></div>
+              <label style={{ fontSize: 11, color: "#9CA3AF" }}>Tráfego (R$)</label>
+              <input
+                type="number" value={adSpendInput}
+                onChange={(e) => setAdSpendInput(e.target.value)}
+                onBlur={handleSaveAdSpend}
+                placeholder="0.00"
+                style={{
+                  border: "0.5px solid #E5E7EB", borderRadius: 6, width: 90,
+                  padding: "4px 8px", fontSize: 12, color: "#374151", background: "white",
+                }}
+              />
+            </>)}
           </div>
 
           <div className="flex items-center gap-3">
@@ -241,7 +277,7 @@ export default function DashboardPage() {
                   <div className="px-2">
                     <p className="text-[10px] font-bold text-[#86868b] uppercase tracking-widest mb-2">Atingido</p>
                     <div className="flex items-baseline justify-center">
-                      <span className="text-[28px] font-bold text-[#1d1d1f] tracking-tight leading-none">0%</span>
+                      <span className="text-[28px] font-bold text-[#1d1d1f] tracking-tight leading-none">{fmtPct(pct, 1)}</span>
                     </div>
                   </div>
                   <div className="px-2">
@@ -335,137 +371,74 @@ export default function DashboardPage() {
                     </div>
                   </div>
 
-                  <div className="flex-1 bg-[#f9fafb] flex items-center justify-center -ml-4 text-[11px] text-[#9ca3af] italic" style={{ clipPath: 'polygon(0 0, 100% 0, 100% 100%, 0 100%, 10% 50%)', paddingLeft: '8%' }}>
-                    Sem vendas<br/>no período
+                  <div className="flex-1 bg-[#e0e1e2] flex items-center justify-center -ml-4" style={{ clipPath: 'polygon(0 0, 100% 0, 100% 100%, 0 100%, 10% 50%)', paddingLeft: '8%' }}>
+                    <div className="flex items-center gap-1.5 text-[#1d1d1f] font-bold text-[12px]">
+                      {fmtPct(funil?.conversions?.closeRate ?? 0, 0)}
+                    </div>
                   </div>
                 </div>
 
-                <div className="text-center mt-5 text-[12px] font-medium text-[#b22222]">
-                  <span className="mr-1">•</span> Gargalo principal: SDR <span className="text-[#d46565]">({(prospeccao?.taxaAgendamento?.value ?? 0) < 15 ? 'baixa taxa de agendamento' : 'boa taxa de agendamento'})</span> <span className="ml-1">•</span>
+                <div className="text-center mt-5 text-[12px] font-medium flex items-center justify-center gap-6">
+                  <div className="text-[#b22222]">
+                    <span className="mr-1">•</span> Gargalo principal: SDR <span className="text-[#d46565]">({(prospeccao?.taxaAgendamento?.value ?? 0) < 15 ? 'baixa taxa de agendamento' : 'boa taxa de agendamento'})</span>
+                  </div>
+                  <div className="text-[#86868b] flex items-center">
+                    <span className="mr-1.5">•</span> Taxa de No-Show: <span className="font-bold text-[#1d1d1f] ml-1">{fmtPct(funil?.conversions?.noShowRate ?? 0, 2)}</span>
+                  </div>
                 </div>
               </div>
 
-              {/* Performance SDR (Mockado) */}
+              {/* Performance SDR */}
               <div className="bg-white rounded-[12px] shadow-[0_2px_12px_rgba(0,0,0,0.03)] border border-[#e5e5ea] p-6">
-                <h3 className="font-bold text-[14px] mb-4 text-[#1d1d1f]">Performance SDR</h3>
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="font-bold text-[14px] text-[#1d1d1f]">Performance SDR</h3>
+                  <div className="text-[10px] text-[#86868b] uppercase tracking-wider font-semibold">Real-time</div>
+                </div>
                 
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                  {/* Card Cauê */}
-                  <div className="border border-[#f0f0f5] rounded-lg p-4 bg-[#fafafa]">
-                    <div className="flex items-center justify-between mb-4">
-                      <div className="flex items-center gap-3">
-                        <div className="w-8 h-8 rounded-full bg-[#1d1d1f] text-white flex items-center justify-center font-bold text-[14px]">C</div>
-                        <span className="font-bold text-[#1d1d1f] text-[15px]">Cauê</span>
-                      </div>
-                      <div className="flex gap-1">
-                        <div className="w-1.5 h-1.5 rounded-full bg-[#d1d5db]"></div>
-                        <div className="w-1.5 h-1.5 rounded-full bg-[#d1d5db]"></div>
-                        <div className="w-1.5 h-1.5 rounded-full bg-[#b49136]"></div>
-                      </div>
-                    </div>
-                    
-                    <div className="text-[12px] text-[#374151] mb-2">
-                      Hoje: <span className="font-bold">0 / 3</span> <span className="text-[#9ca3af] mx-1">•</span> Mês: <span className="font-bold">33 / 60</span>
-                    </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                  {(!sdr?.stats || sdr.stats.length === 0) ? (
+                    <div className="col-span-full py-8 text-center text-[#86868b] text-[13px]">Nenhum dado de SDR apurado no período.</div>
+                  ) : (
+                    sdr.stats.map((agent: any, i: number) => {
+                      // Usar primeira letra pro avatar
+                      const initial = agent.agentName.charAt(0).toUpperCase();
+                      // Meta de ligações diária = 60 (exemplo), ajustamos com diasúteis:
+                      const metaLigacoes = Math.max(1, periodDays * 60);
+                      const speedColor = agent.speedToLeadMin <= 5 ? "text-[#16a34a]" : agent.speedToLeadMin <= 15 ? "text-[#eab308]" : "text-[#dc2626]";
+                      
+                      let dots = [];
+                      if (i === 0) dots = ['bg-[#b49136]', 'bg-[#b49136]', 'bg-[#b49136]'];
+                      else if (i === 1) dots = ['bg-[#d1d5db]', 'bg-[#b49136]', 'bg-[#b49136]'];
+                      else dots = ['bg-[#d1d5db]', 'bg-[#d1d5db]', 'bg-[#b49136]'];
 
-                    <div className="flex h-4 bg-[#e5e5ea] rounded overflow-hidden mb-5">
-                       <div className="bg-[#dc2626] text-[8px] font-bold text-white flex items-center justify-center w-[12.5%] border-r border-white/20">D1</div>
-                       <div className="bg-[#ef4444] text-[8px] font-bold text-white flex items-center justify-center w-[12.5%] border-r border-white/20">D2</div>
-                       <div className="bg-[#ef4444] text-[8px] font-bold text-white flex items-center justify-center w-[12.5%] border-r border-white/20">D2</div>
-                       <div className="bg-[#16a34a] text-[8px] font-bold text-white flex items-center justify-center w-[12.5%] border-r border-white/20">D6</div>
-                       <div className="bg-[#22c55e] text-[8px] font-bold text-white flex items-center justify-center w-[12.5%] border-r border-white/20">D6</div>
-                       <div className="bg-[#22c55e] text-[8px] font-bold text-white flex items-center justify-center w-[12.5%] border-r border-white/20">D7</div>
-                       <div className="bg-[#eab308] flex items-center justify-center w-[12.5%] border-r border-white/20">
-                         <div className="w-1.5 h-1.5 rounded-full bg-white/60"></div>
-                       </div>
-                       <div className="bg-[#eab308] text-[8px] font-bold text-white flex items-center justify-center w-[12.5%]">B</div>
-                    </div>
+                      return (
+                        <div key={agent.agentName} className="border border-[#f0f0f5] rounded-lg p-4 bg-[#fafafa]">
+                          <div className="flex items-center justify-between mb-4">
+                            <div className="flex items-center gap-3">
+                              <div className="w-8 h-8 rounded-full bg-[#1d1d1f] text-white flex items-center justify-center font-bold text-[14px]">{initial}</div>
+                              <span className="font-bold text-[#1d1d1f] text-[15px]">{agent.agentName}</span>
+                            </div>
+                            <div className="flex gap-1">
+                              {dots.map((c, idx) => <div key={idx} className={`w-1.5 h-1.5 rounded-full ${c}`}></div>)}
+                            </div>
+                          </div>
+                          
+                          <div className="text-[12px] text-[#374151] mb-4">
+                            Agendamentos: <span className="font-bold inline-block">{agent.agendamentos}</span> 
+                            <span className="text-[#9ca3af] mx-1">/</span> 
+                            Ligações: <span className="font-bold inline-block">{agent.ligacoes}</span>
+                          </div>
 
-                    <ul className="space-y-2 text-[13px]">
-                      <li className="flex justify-between"><span className="text-[#86868b]">• Ligações</span><span className="font-bold">12</span></li>
-                      <li className="flex justify-between"><span className="text-[#86868b]">• Speed-to-Lead</span><span className="font-bold">5 min</span></li>
-                      <li className="flex justify-between"><span className="text-[#86868b]">• Taxa Agendamento</span><span className="font-bold">13%</span></li>
-                      <li className="flex justify-between"><span className="text-[#86868b]">• No-Show gerado</span><span className="font-bold">18%</span></li>
-                    </ul>
-                  </div>
-
-                  {/* Card Laura */}
-                  <div className="border border-[#f0f0f5] rounded-lg p-4 bg-[#fafafa]">
-                    <div className="flex items-center justify-between mb-4">
-                      <div className="flex items-center gap-3">
-                        <div className="w-8 h-8 rounded-full bg-[#1d1d1f] text-white flex items-center justify-center font-bold text-[14px]">L</div>
-                        <span className="font-bold text-[#1d1d1f] text-[15px]">Laura</span>
-                      </div>
-                      <div className="flex gap-1">
-                        <div className="w-1.5 h-1.5 rounded-full bg-[#16a34a]"></div>
-                        <div className="w-1.5 h-1.5 rounded-full bg-[#16a34a]"></div>
-                        <div className="w-1.5 h-1.5 rounded-full bg-[#16a34a]"></div>
-                      </div>
-                    </div>
-                    
-                    <div className="text-[12px] text-[#374151] mb-2">
-                      Hoje: <span className="font-bold">2 / 3</span> <span className="text-[#9ca3af] mx-1">•</span> Mês: <span className="font-bold">46 / 60</span>
-                    </div>
-
-                    <div className="flex h-4 bg-[#e5e5ea] rounded overflow-hidden mb-5">
-                       <div className="bg-[#dc2626] text-[8px] font-bold text-white flex items-center justify-center w-[12.5%] border-r border-white/20">D1</div>
-                       <div className="bg-[#dc2626] text-[8px] font-bold text-white flex items-center justify-center w-[12.5%] border-r border-white/20">D2</div>
-                       <div className="bg-[#16a34a] text-[8px] font-bold text-white flex items-center justify-center w-[12.5%] border-r border-white/20">D9</div>
-                       <div className="bg-[#22c55e] text-[8px] font-bold text-white flex items-center justify-center w-[12.5%] border-r border-white/20">D6</div>
-                       <div className="bg-[#22c55e] text-[8px] font-bold text-white flex items-center justify-center w-[12.5%] border-r border-white/20">D6</div>
-                       <div className="bg-[#15803d] text-[8px] font-bold text-white flex items-center justify-center w-[12.5%] border-r border-white/20">D9</div>
-                       <div className="bg-[#eab308] flex items-center justify-center w-[12.5%] border-r border-white/20">
-                         <div className="w-1.5 h-1.5 rounded-full bg-white/60"></div>
-                       </div>
-                       <div className="bg-[#9ca3af] w-[12.5%]"></div>
-                    </div>
-
-                    <ul className="space-y-2 text-[13px]">
-                      <li className="flex justify-between"><span className="text-[#86868b]">• Ligações</span><span className="font-bold">19</span></li>
-                      <li className="flex justify-between"><span className="text-[#86868b]">• Speed-to-Lead</span><span className="font-bold">2 min</span></li>
-                      <li className="flex justify-between"><span className="text-[#86868b]">• Taxa Agendamento</span><span className="font-bold">30%</span></li>
-                      <li className="flex justify-between"><span className="text-[#86868b]">• No-Show gerado</span><span className="font-bold">15%</span></li>
-                    </ul>
-                  </div>
-
-                  {/* Card Pedro */}
-                  <div className="border border-[#f0f0f5] rounded-lg p-4 bg-[#fafafa]">
-                    <div className="flex items-center justify-between mb-4">
-                      <div className="flex items-center gap-3">
-                        <div className="w-8 h-8 rounded-full bg-[#1d1d1f] text-white flex items-center justify-center font-bold text-[14px]">P</div>
-                        <span className="font-bold text-[#1d1d1f] text-[15px]">Pedro</span>
-                      </div>
-                      <div className="flex gap-1">
-                        <div className="w-1.5 h-1.5 rounded-full bg-[#d1d5db]"></div>
-                        <div className="w-1.5 h-1.5 rounded-full bg-[#facc15]"></div>
-                        <div className="w-1.5 h-1.5 rounded-full bg-[#facc15]"></div>
-                      </div>
-                    </div>
-                    
-                    <div className="text-[12px] text-[#374151] mb-2">
-                      Hoje: <span className="font-bold">3 / 3</span> <span className="text-[#9ca3af] mx-1">•</span> Mês: <span className="font-bold">56 / 50</span>
-                    </div>
-
-                    <div className="flex h-4 bg-[#e5e5ea] rounded overflow-hidden mb-5">
-                       <div className="bg-[#b22222] text-[8px] font-bold text-white flex items-center justify-center w-[12.5%] border-r border-white/20">D1</div>
-                       <div className="bg-[#dc2626] text-[8px] font-bold text-white flex items-center justify-center w-[12.5%] border-r border-white/20">D4</div>
-                       <div className="bg-[#22c55e] text-[8px] font-bold text-white flex items-center justify-center w-[12.5%] border-r border-white/20">D2</div>
-                       <div className="bg-[#22c55e] text-[8px] font-bold text-white flex items-center justify-center w-[12.5%] border-r border-white/20">D6</div>
-                       <div className="bg-[#16a34a] text-[8px] font-bold text-white flex items-center justify-center w-[12.5%] border-r border-white/20">D8</div>
-                       <div className="bg-[#15803d] text-[8px] font-bold text-white flex items-center justify-center w-[12.5%] border-r border-white/20">D9</div>
-                       <div className="bg-[#eab308] flex items-center justify-center w-[12.5%] border-r border-white/20">
-                         <div className="w-1.5 h-1.5 rounded-full bg-white/60"></div>
-                       </div>
-                       <div className="bg-[#eab308] text-[8px] font-bold text-white flex items-center justify-center w-[12.5%]"></div>
-                    </div>
-
-                    <ul className="space-y-2 text-[13px]">
-                      <li className="flex justify-between"><span className="text-[#86868b]">• Ligações</span><span className="font-bold">15</span></li>
-                      <li className="flex justify-between"><span className="text-[#86868b]">• Speed-to-Lead</span><span className="font-bold">4 min</span></li>
-                      <li className="flex justify-between"><span className="text-[#86868b]">• Taxa Agendamento</span><span className="font-bold">22%</span></li>
-                      <li className="flex justify-between"><span className="text-[#86868b]">• Leads Via Ads</span><span className="font-bold">400</span></li>
-                    </ul>
-                  </div>
+                          <ul className="space-y-2 text-[13px]">
+                            <li className="flex justify-between items-center"><span className="text-[#86868b]">• Speed-to-Lead</span><span className={`font-bold ${speedColor}`}>{agent.speedToLeadMin} min</span></li>
+                            <li className="flex justify-between items-center"><span className="text-[#86868b]">• Eficiência (Lid/Agenda)</span><span className="font-bold">{(agent.agendamentos > 0 ? (agent.ligacoes / agent.agendamentos).toFixed(0) : 0)} ligs/agenda</span></li>
+                            <li className="flex justify-between items-center"><span className="text-[#86868b]">• Taxa Reagend.</span><span className="font-bold">{fmtPct(agent.taxaReagendamento, 1)}</span></li>
+                            <li className="flex justify-between items-center"><span className="text-[#86868b]">• No-Show gerado</span><span className="font-bold">{fmtPct(agent.taxaNoShow, 1)}</span></li>
+                          </ul>
+                        </div>
+                      );
+                    })
+                  )}
                 </div>
               </div>
               
@@ -531,12 +504,6 @@ export default function DashboardPage() {
                        <span className="font-bold text-[#1d1d1f]">{agentRows.filter(a => a.source === 'goto').reduce((s,a)=>s+a.totalCalls, 0)}</span>
                     </div>
                   </li>
-                  <li className="flex justify-between items-center text-[13px]">
-                    <span className="text-[#86868b] font-medium">3C Plus</span>
-                    <div className="flex gap-4">
-                       <span className="font-bold text-[#1d1d1f]">{totalThreec}</span>
-                    </div>
-                  </li>
                 </ul>
               </div>
 
@@ -593,10 +560,16 @@ export default function DashboardPage() {
             <div className="col-span-12 md:col-span-5 bg-white rounded-[12px] shadow-[0_2px_12px_rgba(0,0,0,0.03)] border border-[#e5e5ea] p-6">
               <h3 className="font-bold text-[14px] mb-5 text-[#1d1d1f] border-b border-[#f0f0f5] pb-3">Performance de Vendas Geral</h3>
               <ul className="space-y-4">
+                {showTrafico && (<>
                 <li className="flex justify-between items-center text-[13px]">
                   <span className="text-[#1d1d1f] font-semibold">CAC</span>
-                  <span className="font-bold text-[#1d1d1f] tabular-nums"><span className="text-[10px] text-[#86868b] mr-1 font-normal">R$</span>{fmtBRL(vendas?.cac?.value ?? 0).replace('R$', '').trim()}</span>
+                  <span className="font-bold text-[#1d1d1f] tabular-nums"><span className="text-[10px] text-[#86868b] mr-1 font-normal">R$</span>{fmtBRL(cacCalculado).replace('R$', '').trim()}</span>
                 </li>
+                <li className="flex justify-between items-center text-[13px]">
+                  <span className="text-[#1d1d1f] font-semibold">Custo por Lead (CPL)</span>
+                  <span className="font-bold text-[#1d1d1f] tabular-nums"><span className="text-[10px] text-[#86868b] mr-1 font-normal">R$</span>{fmtBRL(cplCalculado).replace('R$', '').trim()}</span>
+                </li>
+                </>)}
                 <li className="flex justify-between items-center text-[13px]">
                   <span className="text-[#1d1d1f] font-semibold">Ticket Médio</span>
                   <span className="font-bold text-[#1d1d1f] tabular-nums"><span className="text-[10px] text-[#86868b] mr-1 font-normal">R$</span>{fmtBRL(vendas?.ticketMedio?.value ?? 0).replace('R$', '').trim()}</span>
@@ -613,62 +586,79 @@ export default function DashboardPage() {
             </div>
           </div>
 
-          {/* Metrics Grids (Row 2) */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-5 mb-8">
-            {/* Tráfego Meta Ads */}
-            <div className="bg-white rounded-[12px] shadow-[0_2px_12px_rgba(0,0,0,0.03)] border border-[#e5e5ea] p-6">
-              <h3 className="font-bold text-[14px] mb-5 text-[#1d1d1f] border-b border-[#f0f0f5] pb-3">Tráfego Meta Ads</h3>
-              <ul className="space-y-4">
-                <li className="flex justify-between items-center text-[13px]">
-                  <span className="text-[#1d1d1f] font-semibold">Investimento Total</span>
-                  <span className="font-bold text-[#1d1d1f] tabular-nums"><span className="text-[10px] text-[#86868b] mr-1 font-normal">R$</span>{fmtBRL(ads?.totalSpend ?? 0).replace('R$', '').trim()}</span>
-                </li>
-                <li className="flex justify-between items-center text-[13px]">
-                  <span className="text-[#1d1d1f] font-semibold">CPL</span>
-                  <span className="font-bold text-[#1d1d1f] tabular-nums"><span className="text-[10px] text-[#86868b] mr-1 font-normal">R$</span>{fmtBRL(ads?.cpl ?? 0).replace('R$', '').trim()}</span>
-                </li>
-                <li className="flex justify-between items-center text-[13px]">
-                  <span className="text-[#1d1d1f] font-semibold">CPC</span>
-                  <span className="font-bold text-[#1d1d1f] tabular-nums"><span className="text-[10px] text-[#86868b] mr-1 font-normal">R$</span>{fmtBRL(ads?.cpc ?? 0).replace('R$', '').trim()}</span>
-                </li>
-                <li className="flex justify-between items-center text-[13px]">
-                  <span className="text-[#1d1d1f] font-semibold">CTR</span>
-                  <span className="font-bold text-[#1d1d1f] tabular-nums">{fmtPct(ads?.ctr ?? 0, 1)}</span>
-                </li>
-                <li className="flex justify-between items-center text-[13px]">
-                  <span className="text-[#1d1d1f] font-semibold">ROAS</span>
-                  <span className="font-bold text-[#1d1d1f] tabular-nums">{(ads?.roas ?? 0).toFixed(2)}x</span>
-                </li>
-              </ul>
-            </div>
 
-            {/* Tabulações 3C Plus */}
-            <div className="bg-white rounded-[12px] shadow-[0_2px_12px_rgba(0,0,0,0.03)] border border-[#e5e5ea] p-6">
-              <h3 className="font-bold text-[14px] mb-5 text-[#1d1d1f] border-b border-[#f0f0f5] pb-3">Tabulações 3C Plus</h3>
-              <ul className="space-y-4">
-                <li className="flex justify-between items-center text-[13px]">
-                  <span className="text-[#1d1d1f] font-semibold">Sem Interesse</span>
-                  <span className="font-bold text-[#b49136] tabular-nums">38%</span>
-                </li>
-                <li className="flex justify-between items-center text-[13px]">
-                  <span className="text-[#1d1d1f] font-semibold">Não Atendeu</span>
-                  <span className="font-bold text-[#b49136] tabular-nums">22%</span>
-                </li>
-                <li className="flex justify-between items-center text-[13px]">
-                  <span className="text-[#1d1d1f] font-semibold">Retornar</span>
-                  <span className="font-bold text-[#b49136] tabular-nums">12%</span>
-                </li>
-                <li className="flex justify-between items-center text-[13px]">
-                  <span className="text-[#1d1d1f] font-semibold">Negociação</span>
-                  <span className="font-bold text-[#b49136] tabular-nums">8%</span>
-                </li>
-                <li className="flex justify-between items-center text-[13px]">
-                  <span className="text-[#1d1d1f] font-semibold">Fechamento</span>
-                  <span className="font-bold text-[#b49136] tabular-nums">5%</span>
-                </li>
-              </ul>
+
+          {/* IA vs SDR — Comparativo de Agendamentos */}
+          {funil?.agendamentosPorOrigem && (
+            <div className="bg-white rounded-[12px] shadow-[0_2px_12px_rgba(0,0,0,0.03)] border border-[#e5e5ea] p-6 mb-5">
+              <h3 className="font-bold text-[14px] mb-5 text-[#1d1d1f] border-b border-[#f0f0f5] pb-3">
+                Agendamentos — IA vs SDR
+              </h3>
+              <div className="grid grid-cols-2 gap-6">
+                {/* IA */}
+                {(["ia", "sdr"] as const).map((key) => {
+                  const isIa = key === "ia";
+                  const d = funil.agendamentosPorOrigem[key];
+                  return (
+                    <div key={key} className="rounded-[10px] border border-[#e5e5ea] p-4 bg-[#fafafa]">
+                      <div className="flex items-center gap-2 mb-4">
+                        <div className={`w-7 h-7 rounded-full flex items-center justify-center text-white text-[11px] font-bold ${isIa ? "bg-[#1d1d1f]" : "bg-[#b49136]"}`}>
+                          {isIa ? "IA" : "S"}
+                        </div>
+                        <span className="font-bold text-[14px] text-[#1d1d1f]">{isIa ? "IA (Automático)" : "SDR (Humano)"}</span>
+                      </div>
+                      <div className="grid grid-cols-3 gap-3 text-center">
+                        <div>
+                          <p className="text-[22px] font-black text-[#1d1d1f] leading-none">{d.agendamentos}</p>
+                          <p className="text-[10px] text-[#86868b] mt-1 uppercase tracking-wide">Agendamentos</p>
+                        </div>
+                        <div>
+                          <p className="text-[22px] font-black text-[#1d1d1f] leading-none">{d.noShows}</p>
+                          <p className="text-[10px] text-[#86868b] mt-1 uppercase tracking-wide">No-shows</p>
+                        </div>
+                        <div>
+                          <p className={`text-[22px] font-black leading-none ${d.taxaNoShow > 30 ? "text-[#dc2626]" : d.taxaNoShow > 15 ? "text-[#eab308]" : "text-[#16a34a]"}`}>
+                            {fmtPct(d.taxaNoShow, 1)}
+                          </p>
+                          <p className="text-[10px] text-[#86868b] mt-1 uppercase tracking-wide">Taxa No-Show</p>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* Barra comparativa visual — IA vs SDR vs Outros */}
+              {(() => {
+                const ia    = funil.agendamentosPorOrigem.ia.agendamentos;
+                const sdr   = funil.agendamentosPorOrigem.sdr.agendamentos;
+                const other = funil.agendamentosPorOrigem.other?.agendamentos ?? 0;
+                const total = ia + sdr + other;
+                const iaPct    = total > 0 ? (ia    / total) * 100 : 0;
+                const sdrPct   = total > 0 ? (sdr   / total) * 100 : 0;
+                const otherPct = total > 0 ? (other / total) * 100 : 0;
+                return (
+                  <div className="mt-5">
+                    <div className="flex justify-between text-[11px] text-[#86868b] mb-1">
+                      <span>IA {iaPct.toFixed(0)}%</span>
+                      <span className="font-semibold text-[#1d1d1f]">{total} total</span>
+                      <span>SDR {sdrPct.toFixed(0)}%</span>
+                    </div>
+                    <div className="h-2 rounded-full bg-[#f0f0f5] overflow-hidden flex">
+                      <div className="h-full bg-[#1d1d1f] transition-all" style={{ width: `${iaPct}%` }} />
+                      <div className="h-full bg-[#b49136] transition-all" style={{ width: `${sdrPct}%` }} />
+                      <div className="h-full bg-[#d1d5db] rounded-r-full transition-all" style={{ width: `${otherPct}%` }} />
+                    </div>
+                    {other > 0 && (
+                      <p className="text-[10px] text-[#9ca3af] mt-1.5">
+                        + {other} outros (closer / ex-usuários) · {fmtPct(funil.agendamentosPorOrigem.other.taxaNoShow, 1)} no-show
+                      </p>
+                    )}
+                  </div>
+                );
+              })()}
             </div>
-          </div>
+          )}
 
           {/* Bottom Table: Ranking de Closers */}
           <div className="bg-white shadow-[0_2px_12px_rgba(0,0,0,0.03)] border border-[#e5e5ea] rounded-t-[12px] overflow-hidden mb-8">

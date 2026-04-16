@@ -9,7 +9,7 @@ import { useSession } from "next-auth/react";
 const NAV_ITEMS = [
   {
     label: "Visão Executiva",
-    permissionKey: "DASHBOARD",
+    permissionKey: "VISAO_EXECUTIVA",
     icon: (
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
         <rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/>
@@ -20,7 +20,7 @@ const NAV_ITEMS = [
   },
   {
     label: "Performance SDR",
-    permissionKey: "DASHBOARD",
+    permissionKey: "PERF_SDR",
     icon: (
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
         <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07A19.5 19.5 0 0 1 4.69 12 19.79 19.79 0 0 1 1.57 3.27 2 2 0 0 1 3.56 1h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L7.91 8.54a16 16 0 0 0 6.55 6.55l.9-.9a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/>
@@ -30,7 +30,7 @@ const NAV_ITEMS = [
   },
   {
     label: "Performance Closer",
-    permissionKey: "DASHBOARD",
+    permissionKey: "PERF_CLOSER",
     icon: (
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
         <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
@@ -49,6 +49,17 @@ const NAV_ITEMS = [
       </svg>
     ),
     href: "/dashboard/gestao-vendas",
+  },
+  {
+    label: "Tentativas Contato",
+    permissionKey: "PERF_SDR",
+    icon: (
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07A19.5 19.5 0 0 1 4.69 12 19.79 19.79 0 0 1 1.57 3.27 2 2 0 0 1 3.56 1h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L7.91 8.54a16 16 0 0 0 6.55 6.55l.9-.9a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/>
+        <line x1="1" y1="1" x2="23" y2="23"/>
+      </svg>
+    ),
+    href: "/dashboard/tentativas",
   },
   {
     label: "Validação Venda",
@@ -87,8 +98,18 @@ export default function DashboardShell({ children }: { children: React.ReactNode
 
     try {
       const perms = typeof permsRaw === "string" ? JSON.parse(permsRaw) : permsRaw;
+      
+      // Check specific permission key
       const config = perms[item.permissionKey];
-      return config?.enabled === true;
+      if (config?.enabled === true) return true;
+      
+      // Backward compatibility: old "DASHBOARD" key grants access to all 3 dashboard pages
+      const legacyDashboard = perms["DASHBOARD"];
+      if (legacyDashboard?.enabled === true && ["VISAO_EXECUTIVA", "PERF_SDR", "PERF_CLOSER"].includes(item.permissionKey)) {
+        return true;
+      }
+      
+      return false;
     } catch(e) {
       return false;
     }
@@ -100,32 +121,32 @@ export default function DashboardShell({ children }: { children: React.ReactNode
         className="fixed top-0 left-0 h-full flex flex-col z-40 transition-all duration-300"
         style={{
           width: sidebarWidth,
-          background: "var(--cr-sidebar)",
-          borderRight: "1px solid var(--cr-sidebar-border)",
+          background: "#000000",
+          borderRight: "1px solid #1a1a1a",
         }}
       >
         <div
           className="flex items-center justify-between px-4 shrink-0"
           style={{
             height: 64,
-            borderBottom: "1px solid rgba(0,0,0,0.04)",
-            background: "rgba(255,255,255,0.8)",
-            backdropFilter: "blur(12px)",
+            borderBottom: "1px solid rgba(255,255,255,0.05)",
+            background: "#000000",
+            backdropFilter: "none",
           }}
         >
           {!collapsed && (
-            <div className="flex items-center gap-2.5 min-w-0">
+            <div className="flex items-center gap-3 min-w-0 py-1">
               <Image
-                src="/logo.jpg"
+                src="/logo2.png"
                 alt="CR Invest"
-                width={36}
-                height={36}
-                className="rounded-lg object-cover shrink-0"
+                width={42}
+                height={42}
+                className="object-contain shrink-0"
                 priority
               />
               <span
                 className="font-bold tracking-tight truncate"
-                style={{ fontSize: 16, color: "var(--cr-text)" }}
+                style={{ fontSize: 16, color: "#ffffff", marginTop: 2 }}
               >
                 CR INVEST
               </span>
@@ -134,8 +155,8 @@ export default function DashboardShell({ children }: { children: React.ReactNode
           <button
             onClick={() => setCollapsed((c) => !c)}
             className="shrink-0 rounded-lg p-1.5 transition-colors ml-auto"
-            style={{ color: "var(--cr-muted)" }}
-            onMouseEnter={(e) => (e.currentTarget.style.background = "#f0f0f5")}
+            style={{ color: "#a1a1aa" }}
+            onMouseEnter={(e) => (e.currentTarget.style.background = "#27272a")}
             onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
             aria-label="Toggle sidebar"
           >
@@ -163,8 +184,8 @@ export default function DashboardShell({ children }: { children: React.ReactNode
                 className="flex items-center gap-3 rounded-2xl transition-all duration-200 relative overflow-hidden focus:outline-none"
                 style={{
                   padding: collapsed ? "10px 12px" : "10px 14px",
-                  background: isActive ? "#f9f9fb" : "transparent",
-                  color: isActive ? "var(--cr-text)" : "var(--cr-muted)",
+                  background: isActive ? "rgba(255,255,255,0.08)" : "transparent",
+                  color: isActive ? "#ffffff" : "#a1a1aa",
                   fontSize: 14,
                   fontWeight: isActive ? 600 : 500,
                 }}
@@ -181,7 +202,7 @@ export default function DashboardShell({ children }: { children: React.ReactNode
                 <span
                   className="shrink-0 flex items-center justify-center"
                   style={{
-                    color: isActive ? "var(--cr-gold)" : "var(--cr-muted)",
+                    color: isActive ? "var(--cr-gold)" : "#a1a1aa",
                     width: 20,
                   }}
                 >

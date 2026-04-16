@@ -13,7 +13,6 @@ import { prisma } from "@/lib/prisma";
 import { syncKommoData } from "@/services/kommo";
 import { syncFacebookAds } from "@/services/facebook";
 import { syncGoToData } from "@/services/goto";
-import { syncThreeCData } from "@/services/threec";
 
 const SYNC_INTERVAL_MS = 30 * 60 * 1000; // 30 min
 
@@ -30,9 +29,17 @@ export async function runAllSyncs(): Promise<
 
   const results: Record<string, { success: boolean; error?: string; synced?: number }> = {};
 
-  // Kommo
+  // Kommo — meia-noite de hoje (BRT) ou último sync (o mais antigo dos dois)
   try {
-    const r = await syncKommoData({ since: new Date(Date.now() - 2 * 60 * 60 * 1000) });
+    const todayStr = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Sao_Paulo" }).format(new Date());
+    const midnightBRT = new Date(todayStr + "T00:00:00-03:00");
+    const lastKommo = await prisma.syncLog.findFirst({
+      where: { source: "kommo", status: "success" },
+      orderBy: { syncedAt: "desc" },
+    });
+    const lastSyncMs = lastKommo ? lastKommo.syncedAt.getTime() - 5 * 60 * 1000 : Infinity;
+    const since = new Date(Math.min(lastSyncMs, midnightBRT.getTime()));
+    const r = await syncKommoData({ since });
     results.kommo = { success: true, synced: r.synced };
   } catch (err: any) {
     results.kommo = { success: false, error: err?.message };
@@ -69,21 +76,6 @@ export async function runAllSyncs(): Promise<
     await prisma.syncLog.create({
       data: {
         source: "goto",
-        status: "error",
-        message: `Scheduler error: ${err?.message}`,
-      },
-    });
-  }
-
-  // 3C Plus
-  try {
-    const r = await syncThreeCData(startDate, endDate);
-    results.threec = { success: true, synced: r.synced };
-  } catch (err: any) {
-    results.threec = { success: false, error: err?.message };
-    await prisma.syncLog.create({
-      data: {
-        source: "threec",
         status: "error",
         message: `Scheduler error: ${err?.message}`,
       },

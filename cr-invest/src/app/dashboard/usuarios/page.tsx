@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { useSearchParams } from "next/navigation";
 import { signOut, useSession } from "next-auth/react";
 
@@ -15,6 +15,26 @@ interface SyncState {
   loading: boolean;
   result: string | null;
   error: string | null;
+}
+
+interface SyncProgressState {
+  running: boolean;
+  source: string;
+  phase: string;
+  processed: number;
+  total: number;
+  pages: number;
+  startedAt: string | null;
+  finishedAt: string | null;
+  lastError: string | null;
+}
+
+interface SyncHistoryEntry {
+  id: string;
+  source: string;
+  status: string;
+  message: string;
+  syncedAt: string;
 }
 
 function fmtDateTimeBR(iso: string | null): string {
@@ -46,8 +66,11 @@ function SyncButton({
       const res = await fetch(endpoint);
       const json = await res.json();
       if (json.error) throw new Error(json.error);
-      const synced = json.data?.synced ?? json.data?.count ?? "ok";
-      setState({ loading: false, result: `${synced} registros`, error: null });
+      // Servidor retorna imediatamente — sync roda em background no servidor
+      const msg = json.data?.started === false
+        ? json.data?.reason ?? "já em andamento"
+        : "iniciado — pode navegar livremente";
+      setState({ loading: false, result: msg, error: null });
     } catch (e: any) {
       setState({ loading: false, result: null, error: e.message });
     }
@@ -64,7 +87,7 @@ function SyncButton({
             : "border border-gray-200 text-gray-600 hover:bg-gray-50"
         }`}
       >
-        {state.loading ? "Sincronizando..." : label}
+        {state.loading ? "Disparando..." : label}
       </button>
       {state.result && (
         <p className="text-[10px] text-green-600 text-center">✓ {state.result}</p>
@@ -72,6 +95,60 @@ function SyncButton({
       {state.error && (
         <p className="text-[10px] text-red-500 text-center truncate" title={state.error}>
           ✗ {state.error.slice(0, 60)}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function KommoSyncButton({ running, lastFinished }: { running: boolean; lastFinished: string | null }) {
+  const [triggered, setTriggered] = useState(false);
+  const [done, setDone] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const prevRunning = useRef(false);
+
+  // Detecta transição running → false após o botão ter sido clicado
+  useEffect(() => {
+    if (prevRunning.current && !running && triggered) {
+      setTriggered(false);
+      setDone(true);
+    }
+    prevRunning.current = running;
+  }, [running, triggered]);
+
+  async function handleClick() {
+    setTriggered(true);
+    setDone(false);
+    setError(null);
+    try {
+      const res = await fetch("/api/sync/kommo?mode=full");
+      const json = await res.json();
+      if (json.error) setError(json.error);
+    } catch (e: any) {
+      setError(e.message);
+      setTriggered(false);
+    }
+  }
+
+  const isRunning = running || triggered;
+
+  return (
+    <div className="flex flex-col gap-1">
+      <button
+        onClick={handleClick}
+        disabled={isRunning}
+        className="px-3 py-2 rounded-lg text-sm font-medium transition-colors disabled:opacity-50 bg-blue-600 text-white hover:bg-blue-700"
+      >
+        {isRunning ? "Sincronizando..." : "Sincronizar Kommo"}
+      </button>
+      {done && !error && (
+        <p className="text-[10px] text-green-600 text-center font-medium">
+          ✓ Concluído {lastFinished ? `às ${lastFinished}` : ""}
+        </p>
+      )}
+      {error && (
+        <p className="text-[10px] text-red-500 text-center truncate" title={error}>
+          ✗ {error.slice(0, 60)}
         </p>
       )}
     </div>
@@ -90,6 +167,7 @@ export default function UsuariosPage() {
   const [kommo, setKommo] = useState<KommoStatus | null>(null);
   const [kommoLoading, setKommoLoading] = useState(true);
   const [origin, setOrigin] = useState("http://localhost:3000");
+  const [syncStatus, setSyncStatus] = useState<{ progress: SyncProgressState; history: SyncHistoryEntry[] } | null>(null);
 
   // State for Equipe (Users)
   const [vendedores, setVendedores] = useState<any[]>([]);
@@ -107,8 +185,11 @@ export default function UsuariosPage() {
     goldRate: 0.7,
     silverMin: 1000000,
     goldMin: 3000000,
+    password: "",
     permissions: {
-      DASHBOARD: { enabled: true, scope: "all" },
+      VISAO_EXECUTIVA: { enabled: true, scope: "all" },
+      PERF_SDR: { enabled: true, scope: "all" },
+      PERF_CLOSER: { enabled: true, scope: "all" },
       GESTAO_VENDAS: { enabled: true, scope: "all" },
       VALIDACAO_VENDA: { enabled: true, scope: "all" },
       CONFIGURACAO: { enabled: true, scope: "all" },
@@ -189,12 +270,30 @@ export default function UsuariosPage() {
     }
   }, [searchParams]);
 
+  // Poll sync status every 2s while on the integracoes tab
+  useEffect(() => {
+    if (activeTab !== "integracoes") return;
+    const poll = async () => {
+      try {
+        const res = await fetch("/api/sync/status");
+        const json = await res.json();
+        if (json.progress !== undefined && json.history !== undefined) {
+          setSyncStatus({ progress: json.progress, history: json.history });
+        }
+      } catch {}
+    };
+    poll();
+    const id = setInterval(poll, 2000);
+    return () => clearInterval(id);
+  }, [activeTab]);
+
   // Actions
   async function handleAddUser(e: any) {
     e.preventDefault();
     try {
       const res = await fetch("/api/vendedores", {
         method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ 
           ...newUser, 
           id: editingId,
@@ -206,35 +305,53 @@ export default function UsuariosPage() {
         alert(editingId ? "Usuário atualizado!" : "Usuário cadastrado!");
         fetchVendedores();
         handleCancelEdit();
+      } else {
+        const err = await res.json();
+        alert("Erro ao salvar: " + (err.error || "Erro desconhecido"));
       }
-    } catch (e) {
+    } catch (e: any) {
       console.error(e);
+      alert("Erro ao salvar: " + e.message);
     }
   }
 
   function handleEditUser(v: any) {
     setEditingId(v.id);
-    let perms = {
-      DASHBOARD: { enabled: true, scope: "all" },
+    let perms: Record<string, { enabled: boolean; scope: string }> = {
+      VISAO_EXECUTIVA: { enabled: true, scope: "all" },
+      PERF_SDR: { enabled: true, scope: "all" },
+      PERF_CLOSER: { enabled: true, scope: "all" },
       GESTAO_VENDAS: { enabled: true, scope: "all" },
       VALIDACAO_VENDA: { enabled: true, scope: "all" },
       CONFIGURACAO: { enabled: true, scope: "all" },
     };
+    // Backward compat: migrate old DASHBOARD key
     try {
-      if (v.permissions) perms = JSON.parse(v.permissions);
+      if (v.permissions) {
+        const parsed = JSON.parse(v.permissions);
+        if (parsed.DASHBOARD && !parsed.VISAO_EXECUTIVA) {
+          parsed.VISAO_EXECUTIVA = parsed.DASHBOARD;
+          parsed.PERF_SDR = parsed.PERF_SDR || parsed.DASHBOARD;
+          parsed.PERF_CLOSER = parsed.PERF_CLOSER || parsed.DASHBOARD;
+          delete parsed.DASHBOARD;
+        }
+        perms = { ...perms, ...parsed };
+      }
     } catch(e) {}
+    // perms already parsed above
 
     setNewUser({
-      nome: v.nome,
-      email: v.email,
-      role: v.role,
-      fixo: v.fixoMensal,
-      installments: v.installments,
-      bronzeRate: v.bronzeRate,
-      silverRate: v.silverRate,
-      goldRate: v.goldRate,
-      silverMin: v.silverMin,
-      goldMin: v.goldMin,
+      nome: v.nome || "",
+      email: v.email || "",
+      role: v.role || "CLOSER",
+      fixo: v.fixoMensal ?? 0,
+      installments: v.installments ?? 12,
+      bronzeRate: v.bronzeRate ?? 0,
+      silverRate: v.silverRate ?? 0,
+      goldRate: v.goldRate ?? 0,
+      silverMin: v.silverMin ?? 0,
+      goldMin: v.goldMin ?? 0,
+      password: v.password || "",
       permissions: perms
     });
     setActiveTab("equipe");
@@ -254,8 +371,11 @@ export default function UsuariosPage() {
       goldRate: comissaoConfig.percentage + 0.2,
       silverMin: 1000000,
       goldMin: 3000000,
+      password: "",
       permissions: {
-        DASHBOARD: { enabled: true, scope: "all" },
+        VISAO_EXECUTIVA: { enabled: true, scope: "all" },
+        PERF_SDR: { enabled: true, scope: "all" },
+        PERF_CLOSER: { enabled: true, scope: "all" },
         GESTAO_VENDAS: { enabled: true, scope: "all" },
         VALIDACAO_VENDA: { enabled: true, scope: "all" },
         CONFIGURACAO: { enabled: true, scope: "all" },
@@ -373,20 +493,108 @@ export default function UsuariosPage() {
                 )}
               </div>
               {oauthResult === "success" && <div className="mb-4 bg-green-50 border border-green-200 text-green-700 rounded-lg px-4 py-3 text-sm">Conectado com sucesso!</div>}
-              <div className="flex gap-3 flex-wrap">
+              <div className="flex gap-3 flex-wrap items-center">
                 <button onClick={() => { window.location.href = "/api/kommo/auth"; }} className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700">Conectar Kommo</button>
-                <SyncButton label="Sync Incremental" endpoint="/api/sync/kommo?mode=incremental" />
-                <SyncButton label="Sync Completo" endpoint="/api/sync/kommo?mode=full" variant="primary" />
+                <KommoSyncButton
+                  running={syncStatus?.progress?.running ?? false}
+                  lastFinished={syncStatus?.progress?.finishedAt ? fmtDateTimeBR(syncStatus.progress.finishedAt) : null}
+                />
+              </div>
+
+              {/* Sync progress bar */}
+              {syncStatus?.progress?.running && syncStatus.progress.source === "kommo" && (
+                <div className="mt-4 p-3 bg-blue-50 rounded-lg border border-blue-100">
+                  <div className="flex items-center justify-between mb-1.5">
+                    <span className="text-xs text-blue-700 font-medium truncate pr-2">{syncStatus.progress.phase}</span>
+                    <span className="text-xs text-blue-500 shrink-0">
+                      {syncStatus.progress.total > 0
+                        ? `${Math.round((syncStatus.progress.processed / syncStatus.progress.total) * 100)}%`
+                        : `pág. ${syncStatus.progress.pages}`}
+                    </span>
+                  </div>
+                  <div className="h-1.5 bg-blue-100 rounded-full overflow-hidden">
+                    <div
+                      className="h-full bg-blue-500 rounded-full transition-all duration-500"
+                      style={{
+                        width: syncStatus.progress.total > 0
+                          ? `${Math.min(100, (syncStatus.progress.processed / syncStatus.progress.total) * 100)}%`
+                          : "60%",
+                      }}
+                    />
+                  </div>
+                  <p className="text-[10px] text-blue-400 mt-1">
+                    {syncStatus.progress.startedAt ? `Iniciado às ${fmtDateTimeBR(syncStatus.progress.startedAt)}` : ""}
+                  </p>
+                </div>
+              )}
+              {!syncStatus?.progress?.running && syncStatus?.progress?.lastError && (
+                <div className="mt-3 p-2.5 bg-red-50 border border-red-100 rounded-lg text-xs text-red-600">
+                  Erro: {syncStatus.progress.lastError.slice(0, 120)}
+                </div>
+              )}
+            </div>
+
+            <div style={{ background: "white", border: "0.5px solid #E5E7EB", borderRadius: 12, padding: "20px 24px" }}>
+              <h2 className="text-sm font-semibold text-gray-700 mb-4">Outras Plataformas</h2>
+              <div className="space-y-3">
+                <div className="flex items-center gap-3 flex-wrap">
+                  <span className="text-xs text-gray-500 w-20">GoTo Connect</span>
+                  <button
+                    onClick={() => { window.location.href = "/api/goto/auth"; }}
+                    className="px-3 py-2 border border-gray-200 rounded-lg text-sm text-gray-600 hover:bg-gray-50"
+                  >
+                    Reconectar GoTo
+                  </button>
+                  <SyncButton label="Sincronizar GoTo" endpoint="/api/sync/goto" />
+                </div>
+                <div className="flex items-center gap-3 flex-wrap">
+                  <span className="text-xs text-gray-500 w-20">Meta Ads</span>
+                  <SyncButton label="Sincronizar Meta Ads" endpoint="/api/sync/facebook" />
+                </div>
               </div>
             </div>
 
             <div style={{ background: "white", border: "0.5px solid #E5E7EB", borderRadius: 12, padding: "20px 24px" }}>
-              <h2 className="text-sm font-semibold text-gray-700 mb-4">Sync de Outras Plataformas</h2>
-              <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-                <SyncButton label="Meta Ads"  endpoint="/api/sync/facebook" />
-                <SyncButton label="GoTo"      endpoint="/api/sync/goto" />
-                <SyncButton label="3C Plus"   endpoint="/api/sync/threec" />
+              <div className="flex items-center justify-between mb-3">
+                <h2 className="text-sm font-semibold text-gray-700">Histórico de Sincronização</h2>
+                <span className="text-[10px] text-gray-400">Últimas 15 execuções</span>
               </div>
+              {!syncStatus ? (
+                <p className="text-xs text-gray-400 py-2">Carregando...</p>
+              ) : syncStatus.history.length === 0 ? (
+                <p className="text-xs text-gray-400 py-2">Nenhum registro encontrado.</p>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="border-b border-gray-100">
+                        <th className="text-left py-2 pb-2 text-gray-400 font-medium pr-4 w-20">Fonte</th>
+                        <th className="text-left py-2 pb-2 text-gray-400 font-medium pr-4 w-20">Status</th>
+                        <th className="text-left py-2 pb-2 text-gray-400 font-medium pr-4">Mensagem</th>
+                        <th className="text-right py-2 pb-2 text-gray-400 font-medium w-36">Data/Hora</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {syncStatus.history.map((h) => (
+                        <tr key={h.id} className="border-b border-gray-50 hover:bg-gray-50">
+                          <td className="py-1.5 pr-4 text-gray-600 capitalize">{h.source}</td>
+                          <td className="py-1.5 pr-4">
+                            <span className={`px-1.5 py-0.5 rounded text-[10px] font-semibold ${
+                              h.status === "success"
+                                ? "bg-green-100 text-green-700"
+                                : h.status === "error"
+                                ? "bg-red-100 text-red-600"
+                                : "bg-gray-100 text-gray-500"
+                            }`}>{h.status}</span>
+                          </td>
+                          <td className="py-1.5 pr-4 text-gray-500 max-w-xs truncate" title={h.message}>{h.message}</td>
+                          <td className="py-1.5 text-right text-gray-400 whitespace-nowrap">{fmtDateTimeBR(h.syncedAt)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -498,7 +706,9 @@ export default function UsuariosPage() {
                   <h3 className="text-[11px] font-bold text-gray-800 mb-4 uppercase tracking-widest">Acessos e Permissões por Aba</h3>
                   <div className="space-y-2">
                     {[
-                      { id: "DASHBOARD", label: "Dashboard Ciclo Comercial" },
+                      { id: "VISAO_EXECUTIVA", label: "Visão Executiva (Dashboard)" },
+                      { id: "PERF_SDR", label: "Performance SDR" },
+                      { id: "PERF_CLOSER", label: "Performance Closer" },
                       { id: "GESTAO_VENDAS", label: "Gestão de Vendas" },
                       { id: "VALIDACAO_VENDA", label: "Validação de Venda" },
                       { id: "CONFIGURACAO", label: "Configurações do Sistema" },

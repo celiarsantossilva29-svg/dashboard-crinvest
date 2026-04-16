@@ -100,11 +100,9 @@ export async function calcTaxaConversao(
   }
 
   const [won, total] = await Promise.all([
-    prisma.lead.count({
-      where: {
-        status: "won",
-        createdAt: { gte: period.startDate, lte: period.endDate },
-      },
+    // Fonte de verdade: tabela Sale (vendas validadas)
+    prisma.sale.count({
+      where: { closedAt: { gte: period.startDate, lte: period.endDate } },
     }),
     prisma.lead.count({
       where: { createdAt: { gte: period.startDate, lte: period.endDate } },
@@ -219,38 +217,20 @@ export async function calcTaxaAgendamento(
 export async function calcNoShow(
   period: Period
 ): Promise<{ value: number; missed: number; scheduled: number }> {
-  if (USE_MOCK) {
-    const leads = getMockLeads().filter(
-      (l) => l.createdAt >= period.startDate && l.createdAt <= period.endDate
-    );
-    const scheduled = leads.filter((l) =>
-      ["scheduled", "meeting", "won", "lost"].includes(l.status)
-    ).length;
-    const meetings = leads.filter((l) =>
-      ["meeting", "won", "lost"].includes(l.status)
-    ).length;
-    const missed = scheduled - meetings;
-    const value = scheduled > 0 ? (missed / scheduled) * 100 : 0;
-    return { value, missed, scheduled };
-  }
+  const leads = await prisma.lead.findMany({
+    where: { createdAt: { gte: period.startDate, lte: period.endDate } },
+    select: { status: true, scheduledAt: true, meetingAt: true, noShowAt: true },
+  });
 
-  const [scheduled, meetings] = await Promise.all([
-    prisma.lead.count({
-      where: {
-        createdAt: { gte: period.startDate, lte: period.endDate },
-        status: { in: ["scheduled", "meeting", "won", "lost"] },
-      },
-    }),
-    prisma.lead.count({
-      where: {
-        createdAt: { gte: period.startDate, lte: period.endDate },
-        status: { in: ["meeting", "won", "lost"] },
-      },
-    }),
-  ]);
+  const scheduled = leads.filter((l) =>
+    l.scheduledAt != null || l.meetingAt != null || l.status === "won" || ["scheduled", "meeting"].includes(l.status)
+  ).length;
 
-  const missed = scheduled - meetings;
-  const value = scheduled > 0 ? (missed / scheduled) * 100 : 0;
+  // No-show: evento concreto do Kommo (etapa "Reagendamento") — não usa aritmética
+  // porque meetingAt só é preenchido via GoTo Connect, não pelo avanço de etapa no Kommo.
+  const missed = leads.filter((l) => l.noShowAt != null).length;
+
+  const value = scheduled > 0 ? parseFloat(((missed / scheduled) * 100).toFixed(2)) : 0;
   return { value, missed, scheduled };
 }
 
@@ -291,16 +271,19 @@ export async function calcContatosPorLead(period: Period): Promise<number> {
       (l) => l.createdAt >= period.startDate && l.createdAt <= period.endDate
     );
     if (leads.length === 0) return 0;
-    const total = leads.reduce((s, l) => s + l.interactionCount, 0);
+    const total = leads.reduce((s, l) => s + (l.interactionCount ?? 0), 0);
     return parseFloat((total / leads.length).toFixed(1));
   }
 
-  const agg = await prisma.lead.aggregate({
+  // Usa o maior valor entre contactAttempts (Kommo) e goToCalls (GoTo) por lead
+  const leads = await prisma.lead.findMany({
     where: { createdAt: { gte: period.startDate, lte: period.endDate } },
-    _avg: { interactionCount: true },
+    select: { contactAttempts: true, goToCalls: true },
   });
 
-  return parseFloat((agg._avg.interactionCount ?? 0).toFixed(1));
+  if (leads.length === 0) return 0;
+  const total = leads.reduce((s, l) => s + Math.max(l.contactAttempts, l.goToCalls), 0);
+  return parseFloat((total / leads.length).toFixed(1));
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -423,7 +406,7 @@ export interface DialerResult {
   totalCalls: number;
   totalTalkTimeSecs: number;
   avgTalkTimePerCall: number;
-  callsBySource: { goto: number; threec: number };
+  callsBySource: { goto: number };
   callsByAgent: AgentDialerStats[];
 }
 
@@ -446,10 +429,8 @@ export async function calcDialerMetrics(
     const avgTalkTimePerCall = totalCalls > 0 ? totalTalkTimeSecs / totalCalls : 0;
 
     const gotoRows = rows.filter((r) => r.source === "goto");
-    const threecRows = rows.filter((r) => r.source === "threec");
     const callsBySource = {
       goto: gotoRows.reduce((s, r) => s + r.totalCalls, 0),
-      threec: threecRows.reduce((s, r) => s + r.totalCalls, 0),
     };
 
     // Aggregate by agentName + source
@@ -498,7 +479,6 @@ export async function calcDialerMetrics(
 
   const callsBySource = {
     goto: rows.filter((r: DialerRow) => r.source === "goto").reduce((s: number, r: DialerRow) => s + r.totalCalls, 0),
-    threec: rows.filter((r: DialerRow) => r.source === "threec").reduce((s: number, r: DialerRow) => s + r.totalCalls, 0),
   };
 
   const agentMap: Record<string, AgentDialerStats> = {};

@@ -66,9 +66,22 @@ export const authOptions: AuthOptions = {
   callbacks: {
     async jwt({ token, user }) {
       if (user) {
+        // Primeiro login — popula do objeto user
         token.role = (user as any).role;
         token.permissions = (user as any).permissions;
         token.id = user.id;
+      } else if (token.id && token.id !== "admin") {
+        // Renovações subsequentes — re-busca permissões do banco para refletir edições
+        try {
+          const fresh = await prisma.vendedor.findUnique({
+            where: { id: String(token.id) },
+            select: { role: true, permissions: true },
+          });
+          if (fresh) {
+            token.role = fresh.role;
+            token.permissions = fresh.permissions;
+          }
+        } catch { /* mantém token existente em caso de falha */ }
       }
       return token;
     },
