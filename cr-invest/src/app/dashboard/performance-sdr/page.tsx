@@ -2,9 +2,8 @@
 
 import React, { useState, useEffect, useCallback } from "react";
 import {
-  LineChart, Line, BarChart, Bar, Legend, XAxis, YAxis, ReferenceLine, ResponsiveContainer, Tooltip as RechartsTooltip, CartesianGrid, AreaChart, Area
+  LineChart, Line, BarChart, Bar, Legend, XAxis, YAxis, ReferenceLine, ResponsiveContainer, Tooltip as RechartsTooltip, CartesianGrid
 } from "recharts";
-import { Medal, Zap, Target } from "lucide-react";
 import { useSession } from "next-auth/react";
 
 // ─── helpers ────────────────────────────────────────────────────────────────
@@ -273,59 +272,6 @@ export default function PerformanceSdrPage() {
     ? (apiData?.agendamentosPorOrigem?.total ?? sdrAgend)
     : sdrAgend;
 
-  // ── GAMIFICAÇÃO E PROJEÇÃO (SDR) ──
-  const sdrSales = selectedAgent 
-    ? sales.filter(s => s.sdrName && selectedAgent.toLowerCase().includes(s.sdrName.trim().toLowerCase()))
-    : sales.filter(s => s.sdrName); // Pega todas as vendas que tiveram envolvimento de algum SDR
-
-  const totalVendido = sdrSales.reduce((acc, s) => acc + s.value, 0);
-  const baseSalary = 3000;
-  let currentTier = "Bronze";
-  let commissionRate = 0.07; // 0.07% para SDR
-  let nextTier = "Prata";
-  let nextCommissionRate = 0.08;
-  let currentTierMin = 0;
-  let nextTierMax = 999999;
-
-  if (totalVendido >= 3000000) {
-     currentTier = "Ouro";
-     commissionRate = 0.09;
-     nextTier = "Max";
-     nextCommissionRate = 0.09;
-     currentTierMin = 3000000;
-     nextTierMax = totalVendido > 3000000 ? totalVendido : 3000000;
-  } else if (totalVendido >= 1000000) {
-     currentTier = "Prata";
-     commissionRate = 0.08;
-     nextTier = "Ouro";
-     nextCommissionRate = 0.09;
-     currentTierMin = 1000000;
-     nextTierMax = 2999999;
-  }
-
-  const comissaoGerada = totalVendido * (commissionRate / 100);
-  const comissaoFutura = 0; // SDR é pago de uma vez, não há simulação de futuro parcelado
-  
-  const faltamParaVirada = Math.max(0, (nextTierMax + 1) - totalVendido);
-  const progressPercent = currentTier === "Ouro" ? 100 : Math.min(100, Math.round(((totalVendido - currentTierMin) / ((nextTierMax + 1) - currentTierMin)) * 100));
-
-  const monthNames = ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"];
-  const chartData = monthNames.map((name, i) => {
-    const vendasMes = sdrSales.filter((s: any) => {
-      if (!s.closedAt) return false;
-      const d = new Date(s.closedAt);
-      // O SDR recebe no mês seguinte, então o pagamento do mês 'i' depende das vendas do mês 'i - 1'
-      return d.getUTCMonth() === i - 1;
-    });
-    
-    const totalMes = vendasMes.reduce((acc: number, current: any) => acc + current.value, 0);
-    
-    return {
-      name,
-      Fixo: baseSalary,
-      Variável: totalMes > 0 ? (totalMes * (commissionRate / 100)) : 0
-    };
-  });
 
   return (
     <div className="flex-1 overflow-x-hidden overflow-y-auto w-full bg-[#f7f8f9] text-[#1d1d1f] font-sans selection:bg-[#c89f3c] selection:text-white pb-16">
@@ -923,122 +869,6 @@ export default function PerformanceSdrPage() {
           </div>
         </div>
 
-
-        {/* ── NOVO BLOCO: GANho E PROGRESSÃO (SDR) ── */}
-        <div className="mt-8 bg-[#1d1d1f] rounded-[32px] p-8 shadow-2xl flex flex-col md:flex-row gap-8 relative overflow-hidden">
-          
-          <div className="absolute top-0 right-0 p-8 opacity-5">
-             <Medal size={150} />
-          </div>
-
-          <div className="flex-1 z-10 flex flex-col justify-center">
-             <h3 className="text-[10px] uppercase font-bold tracking-widest text-gray-400 mb-6 flex items-center gap-2">
-               <Target size={14} className="text-[#d97706]" /> Seu ganho e progressão (SDR)
-             </h3>
-             
-             <div className="grid grid-cols-2 gap-y-6 gap-x-4">
-                <div>
-                  <span className="block text-[11px] font-medium text-gray-500 mb-1">Salário Fixo</span>
-                  <span className="block text-[20px] font-bold text-white">{fmtBRL(baseSalary)}</span>
-                </div>
-                <div>
-                  <span className="block text-[11px] font-medium text-gray-500 mb-1">Status Atual</span>
-                  <div className="inline-flex items-center gap-2 bg-[#2d2d2f] border border-gray-700 px-3 py-1 rounded-md">
-                     {currentTier === "Bronze" && <div className="w-2 h-2 rounded-full bg-[#CD7F32]"></div>}
-                     {currentTier === "Prata" && <div className="w-2 h-2 rounded-full bg-[#C0C0C0]"></div>}
-                     {currentTier === "Ouro" && <div className="w-2 h-2 rounded-full bg-[#FFD700]"></div>}
-                     <span className="text-[12px] font-bold text-white uppercase">{currentTier}</span>
-                  </div>
-                </div>
-                <div>
-                  <span className="block text-[11px] font-medium text-gray-500 mb-1">Comissão Gerada</span>
-                  <span className="block text-[20px] font-bold text-[#d97706]">{fmtBRL(comissaoGerada)}</span>
-                </div>
-                <div>
-                  <span className="block text-[11px] font-medium text-gray-500 mb-1">Previsto (Futuras)</span>
-                  <span className="block text-[20px] font-bold text-emerald-400">{fmtBRL(comissaoFutura)}</span>
-                </div>
-             </div>
-          </div>
-
-          <div className="flex-[1.5] bg-[#2d2d2f]/50 border border-t-0 border-b-0 border-gray-800 px-8 py-4 z-10 flex flex-col justify-center gap-4">
-            <div className="flex justify-between items-end">
-               <span className="text-[13px] font-bold text-white">Próximo: {nextTier === "Max" ? "Top Performance" : nextTier}</span>
-               <span className="text-[11px] text-gray-400 font-medium">Meta: {fmtBRL(nextTierMax + 1)}</span>
-            </div>
-            
-            <div className="relative w-full h-3 bg-gray-800 rounded-full overflow-hidden">
-               <div className="absolute top-0 left-0 h-full bg-gradient-to-r from-[#d97706] to-[#fbbf24] transition-all duration-1000" style={{ width: `${progressPercent}%` }}></div>
-            </div>
-
-            {currentTier !== "Ouro" && (
-               <div className="text-right">
-                  <span className="text-[11px] text-gray-400">Time precisa faturar mais: <strong className="text-white">{fmtBRL(faltamParaVirada)}</strong></span>
-               </div>
-            )}
-          </div>
-
-          <div className="flex-1 z-10 flex items-center">
-             {currentTier !== "Ouro" ? (
-               <div className="w-full bg-gradient-to-br from-[#d97706]/20 to-[#dc2626]/10 border border-[#d97706]/30 rounded-2xl p-5 flex flex-col gap-3">
-                  <Zap size={24} className="text-[#d97706] mb-1" />
-                  <p className="text-[14px] text-white font-medium leading-tight">
-                    Faltando <strong className="text-white">{fmtBRL(faltamParaVirada)}</strong> na empresa!
-                  </p>
-                  <p className="text-[11px] text-gray-400">
-                    Sua taxa de SDR vai bater <strong className="text-[#fbbf24] text-[13px]">{nextCommissionRate}%</strong> por contrato fechado!
-                  </p>
-               </div>
-             ) : (
-               <div className="w-full bg-gradient-to-br from-emerald-500/20 to-emerald-700/10 border border-emerald-500/30 rounded-2xl p-5 flex flex-col gap-3">
-                  <Medal size={24} className="text-emerald-400 mb-1" />
-                  <p className="text-[14px] text-white font-medium leading-tight">
-                    Você atingiu o nível Máximo: <strong className="text-emerald-400">OURO!</strong>
-                  </p>
-                  <p className="text-[11px] text-gray-400">
-                    Aproveite sua comissão de SDR de <strong className="text-emerald-400 text-[13px]">0.09%</strong>.
-                  </p>
-               </div>
-             )}
-          </div>
-
-        </div>
-
-        {/* ── GRÁFICO PROJEÇÃO FINANCEIRA (SDR) ── */}
-        <div className="mt-8 bg-white border border-gray-100 rounded-[32px] p-8 shadow-sm">
-           <div className="mb-8">
-              <h3 className="text-[18px] font-bold text-[#111827] tracking-tight">Projeção Financeira SDR (12 Meses)</h3>
-              <p className="text-[12px] text-gray-400 font-medium">Salário Fixo + Comissões de Originação em Agendamentos Fechados</p>
-           </div>
-           
-           <div className="w-full h-[320px]">
-              <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={chartData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
-                  <defs>
-                    <linearGradient id="colorVar2" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="#d97706" stopOpacity={0.4}/>
-                      <stop offset="95%" stopColor="#d97706" stopOpacity={0}/>
-                    </linearGradient>
-                    <linearGradient id="colorFixo2" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="#f3f4f6" stopOpacity={1}/>
-                      <stop offset="95%" stopColor="#f3f4f6" stopOpacity={1}/>
-                    </linearGradient>
-                  </defs>
-                  <XAxis dataKey="name" tick={{ fontSize: 11, fill: '#9ca3af' }} axisLine={false} tickLine={false} dy={10} />
-                  <YAxis tick={{ fontSize: 11, fill: '#9ca3af' }} axisLine={false} tickLine={false} tickFormatter={(val) => `R$ ${val/1000}k`} />
-                  <CartesianGrid vertical={false} strokeDasharray="3 3" stroke="#f0f0f5" />
-                  <RechartsTooltip 
-                     contentStyle={{ borderRadius: '12px', border: '1px solid #f0f0f5', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }} 
-                     itemStyle={{ fontSize: '13px', fontWeight: 'bold' }} 
-                     labelStyle={{ fontSize: '12px', color: '#6b7280', marginBottom: '4px' }}
-                     formatter={(value: any) => fmtBRL(Number(value))}
-                  />
-                  <Area type="monotone" dataKey="Fixo" stackId="1" stroke="#e5e7eb" strokeWidth={2} fill="url(#colorFixo2)" activeDot={false} />
-                  <Area type="monotone" dataKey="Variável" stackId="1" stroke="#d97706" strokeWidth={2} fill="url(#colorVar2)" />
-                </AreaChart>
-              </ResponsiveContainer>
-           </div>
-        </div>
 
       </main>
     </div>
