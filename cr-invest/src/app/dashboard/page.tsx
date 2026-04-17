@@ -95,6 +95,10 @@ export default function DashboardPage() {
   const [closers, setClosers] = useState<any>(null);
   const [syncStatus, setSyncStatus] = useState<any>(null);
   const [sdr, setSdr] = useState<any>(null);
+  const [editingMeta, setEditingMeta] = useState(false);
+  const [metaInput, setMetaInput] = useState<string>("");
+  const [savingMeta, setSavingMeta] = useState(false);
+  const isAdmin = userRole === "admin";
 
   const fetchAll = useCallback(async () => {
     const [m, f, v, p, a, d, c, sSync, sdrData] = await Promise.all([
@@ -155,6 +159,28 @@ export default function DashboardPage() {
       });
       alert('Investimento salvo com sucesso!');
     } catch(e) {}
+  };
+
+  const handleSaveMeta = async () => {
+    const goalId = meta?.goal?.id;
+    if (!goalId) return;
+    const v = parseFloat(metaInput.replace(/\./g, "").replace(",", ".")) || 0;
+    setSavingMeta(true);
+    try {
+      const res = await fetch(`/api/goals?id=${goalId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ target: v }),
+      });
+      const json = await res.json();
+      if (json.data) {
+        setMeta((prev: any) => ({ ...prev, goal: { ...prev.goal, target: json.data.target } }));
+        setEditingMeta(false);
+        setMetaInput("");
+      }
+    } finally {
+      setSavingMeta(false);
+    }
   };
 
   // dialer
@@ -301,6 +327,36 @@ export default function DashboardPage() {
                     <div className="w-px h-4 bg-[#e5e5ea]"></div>
                     <p className="text-[#1d1d1f]">Faltam: <span className="font-bold">{faltamVendas} vendas</span></p>
                   </div>
+                  {/* Edição inline da meta — só admin */}
+                  {isAdmin && (
+                    <div className="flex items-center gap-2">
+                      {editingMeta ? (
+                        <>
+                          <input
+                            type="number" autoFocus value={metaInput}
+                            onChange={e => setMetaInput(e.target.value)}
+                            placeholder={fmtBRL(metaTarget)}
+                            className="border border-[#e5e5ea] rounded-md px-2 py-1 text-[12px] w-36 focus:outline-none focus:ring-1 focus:ring-[#b49136]"
+                          />
+                          <button onClick={handleSaveMeta} disabled={savingMeta || !metaInput}
+                            className="text-[11px] font-semibold px-3 py-1 rounded-md bg-[#1d1d1f] text-white hover:bg-[#333] disabled:opacity-40 transition-colors">
+                            {savingMeta ? "..." : "Salvar"}
+                          </button>
+                          <button onClick={() => { setEditingMeta(false); setMetaInput(""); }}
+                            className="text-[11px] text-[#86868b] hover:text-[#1d1d1f] transition-colors">
+                            Cancelar
+                          </button>
+                        </>
+                      ) : (
+                        <button onClick={() => { setEditingMeta(true); setMetaInput(String(metaTarget)); }}
+                          className="flex items-center gap-1 text-[11px] text-[#86868b] hover:text-[#b49136] transition-colors"
+                          title="Editar meta">
+                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                          Meta: {fmtBRL(metaTarget)}
+                        </button>
+                      )}
+                    </div>
+                  )}
                 </div>
 
                 <div className="border-t border-[#f0f0f5] mt-1 pt-3 flex items-center justify-between pb-1">
