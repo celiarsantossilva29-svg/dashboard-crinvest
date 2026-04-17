@@ -241,8 +241,15 @@ export default function PerformanceSdrPage() {
     }
   }, [start, end, selectedAgent, isInitialized]);
 
-  useEffect(() => { 
-    if (isInitialized) fetchData(); 
+  useEffect(() => {
+    if (isInitialized) fetchData();
+  }, [fetchData, isInitialized]);
+
+  // Auto-refresh a cada 5 minutos
+  useEffect(() => {
+    if (!isInitialized) return;
+    const interval = setInterval(() => { fetchData(); }, 5 * 60 * 1000);
+    return () => clearInterval(interval);
   }, [fetchData, isInitialized]);
 
   const stats = apiData?.stats ?? [];

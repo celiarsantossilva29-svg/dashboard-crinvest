@@ -152,6 +152,12 @@ export default function PerformanceCloserPage() {
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
+  // Auto-refresh a cada 5 minutos
+  useEffect(() => {
+    const interval = setInterval(() => { fetchData(); }, 5 * 60 * 1000);
+    return () => clearInterval(interval);
+  }, [fetchData]);
+
   // DERIVED DATA
   const agents = apiData?.agents ?? [];
   const lossReasons = apiData?.lossReasons ?? [];

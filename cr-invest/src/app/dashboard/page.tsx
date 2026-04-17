@@ -118,6 +118,12 @@ export default function DashboardPage() {
 
   useEffect(() => { fetchAll(); }, [fetchAll]);
 
+  // Auto-refresh a cada 5 minutos
+  useEffect(() => {
+    const interval = setInterval(() => { fetchAll(); }, 5 * 60 * 1000);
+    return () => clearInterval(interval);
+  }, [fetchAll]);
+
   // ── derived values ─────────────────────────────────────────────────────────
 
   const lastSync = syncStatus
@@ -174,9 +180,9 @@ export default function DashboardPage() {
       });
       const json = await res.json();
       if (json.data) {
-        setMeta((prev: any) => ({ ...prev, goal: { ...prev.goal, target: json.data.target } }));
         setEditingMeta(false);
         setMetaInput("");
+        await fetchAll(); // recalcula pct, projeção e barra com o novo target
       }
     } finally {
       setSavingMeta(false);
