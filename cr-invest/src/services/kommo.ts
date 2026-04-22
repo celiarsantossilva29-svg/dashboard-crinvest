@@ -495,14 +495,14 @@ export async function syncKommoData(opts: SyncOptions = {}): Promise<{ synced: n
 
     if (items.length === 0) break;
 
-    // Ignora leads do funil "CAMPANHA | NUTRIÇÃO" — base antiga, irrelevante para o dashboard
-    const SKIP_PIPELINE = "CAMPANHA | NUTRIÇÃO";
+    // Ignora leads de funis que não são de prospecção ativa
+    const SKIP_PIPELINES = ["CAMPANHA | NUTRIÇÃO", "PÓS-VENDAS"];
     const filteredItems = items.filter((item: any) => {
-      const pName = pipelines[item.pipeline_id]?.name ?? "";
-      return !pName.toUpperCase().includes("CAMPANHA") && !pName.toUpperCase().includes("NUTRIÇÃO");
+      const pName = (pipelines[item.pipeline_id]?.name ?? "").toUpperCase();
+      return !pName.includes("CAMPANHA") && !pName.includes("NUTRIÇÃO") && !pName.includes("PÓS-VENDAS") && !pName.includes("POS-VENDAS");
     });
     const skipped = items.length - filteredItems.length;
-    if (skipped > 0) console.log(`Pulando ${skipped} leads do funil "${SKIP_PIPELINE}"`);
+    if (skipped > 0) console.log(`Pulando ${skipped} leads de funis ignorados: ${SKIP_PIPELINES.join(", ")}`);
     const activeItems = filteredItems;
 
     updateSync(`Pág. ${page}: ${activeItems.length} leads recebidos, buscando contatos...`, 0, 0, page);
