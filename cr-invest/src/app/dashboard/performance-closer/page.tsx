@@ -29,13 +29,13 @@ const TOOLTIP_STYLE = {
 
 // ─── types ────────────────────────────────────────────────────────────────────
 
-interface CloserStats { agentName: string; vendas: number; receita: number; ticketMedio: number; taxaWin: number; reunioesPorVenda: number; taxaNoShow: number; }
+interface CloserStats { agentName: string; vendas: number; totalReunioes: number; receita: number; ticketMedio: number; taxaWin: number; reunioesPorVenda: number; taxaNoShow: number; }
 interface Installment { parcelaNumero: number; dataVencimento: string; valorParcela: number; pago: boolean; }
 interface DealCard { id: string; clientName: string; assignedTo: string; value: number; closedAt: string; status: "won" | "lost"; lostReason: string | null; campaignName: string | null; installments?: Installment[]; }
 interface LossReason { reason: string; count: number; }
 interface ApiData {
   agents: CloserStats[]; deals: DealCard[]; lossReasons: LossReason[];
-  totals: { vendas: number; receita: number; ticketMedioGeral: number; taxaWinGeral: number; noShowGeral: number; leadTimeMedioGeral: number; };
+  totals: { vendas: number; receita: number; ticketMedioGeral: number; taxaWinGeral: number; totalReunioes: number; noShowGeral: number; leadTimeMedioGeral: number; };
   syncStatus?: any;
 }
 type DealTab = "won" | "lost";
@@ -203,20 +203,12 @@ export default function PerformanceCloserPage() {
   const pctAtingidoDaMeta = Math.min(100, Math.round((displayReceita / metaMesVal) * 100));
   const faltamReceita = Math.max(0, metaMesVal - displayReceita);
 
-  // Funil: step 1 & 4 come from per-agent API data; steps 2 & 3 only available as team totals
-  const crmFunnelTeam = {
-    reuniao1: 44,
-    reuniao2: 4,
-    reagendamento: 12,
-    negociacao: 45,
-    contatoFuturo: 23,
-  };
-
-  const reunioesFeitas      = crmFunnelTeam.reuniao1;
+  // Reuniões realizadas no período: per-agent when filter active, team total otherwise
+  const reunioesFeitas      = selectedAgent ? selectedAgent.totalReunioes : (totals?.totalReunioes ?? 0);
   const totalVendasPeriodo  = displayVendas;
-  // Steps 2 & 3 have no per-agent breakdown in the API — hide them when filtering
-  const reunioes2Realizadas = selectedAgent ? 0 : crmFunnelTeam.reuniao2;
-  const propostasRealizadas = selectedAgent ? 0 : crmFunnelTeam.negociacao;
+  // Steps 2 & 3 not tracked per-agent — show 0 (placeholder for future implementation)
+  const reunioes2Realizadas = 0;
+  const propostasRealizadas = 0;
 
   const qtDiasPeriodo = Math.max(1, Math.ceil((new Date(end).getTime() - new Date(start).getTime()) / 86400000));
   const reunioesPorDia = (reunioesFeitas / qtDiasPeriodo).toFixed(1);

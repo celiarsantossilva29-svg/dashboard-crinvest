@@ -8,7 +8,7 @@ export async function GET() {
     const vendedores = await prisma.vendedor.findMany({
       orderBy: { nome: "asc" },
     });
-    return NextResponse.json({ data: vendedores });
+    return NextResponse.json({ data: vendedores }, { headers: { 'Cache-Control': 'public, s-maxage=60, stale-while-revalidate=300' } });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }

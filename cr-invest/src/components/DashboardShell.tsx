@@ -1,10 +1,43 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import Link from "next/link";
 import Image from "next/image";
 import { usePathname } from "next/navigation";
 import { useSession } from "next-auth/react";
+
+type SyncProgress = {
+  running: boolean;
+  phase: string;
+  processed: number;
+  total: number;
+  source: string;
+};
+
+function useSyncStatus() {
+  const [progress, setProgress] = useState<SyncProgress | null>(null);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  useEffect(() => {
+    const poll = async () => {
+      try {
+        const res = await fetch("/api/sync/status");
+        const json = await res.json();
+        if (json.progress) setProgress(json.progress as SyncProgress);
+        else setProgress(null);
+      } catch {
+        setProgress(null);
+      }
+    };
+
+    poll();
+    // Poll a cada 3s — custo mínimo (só 1 DB query leve), persiste em qualquer aba
+    timerRef.current = setInterval(poll, 3000);
+    return () => { if (timerRef.current) clearInterval(timerRef.current); };
+  }, []);
+
+  return progress;
+}
 
 const NAV_ITEMS = [
   {
@@ -89,6 +122,7 @@ export default function DashboardShell({ children }: { children: React.ReactNode
   const pathname = usePathname();
   const { data: session } = useSession();
   const sidebarWidth = collapsed ? 64 : 240;
+  const syncStatus = useSyncStatus();
 
   const filteredNavItems = NAV_ITEMS.filter(item => {
     if ((session?.user as any)?.role === "admin") return true;
@@ -221,6 +255,22 @@ export default function DashboardShell({ children }: { children: React.ReactNode
         className="flex flex-col min-h-screen transition-all duration-300"
         style={{ marginLeft: sidebarWidth }}
       >
+        {syncStatus?.running && (
+          <div className="sticky top-0 z-30 flex items-center gap-3 px-5 py-2 text-xs font-medium text-white"
+            style={{ background: "#1a1a2e", borderBottom: "1px solid #2d2d4e" }}>
+            <span className="inline-flex h-2 w-2 shrink-0">
+              <span className="animate-ping absolute inline-flex h-2 w-2 rounded-full bg-amber-400 opacity-75" />
+              <span className="relative inline-flex h-2 w-2 rounded-full bg-amber-500" />
+            </span>
+            <span className="text-amber-300 font-semibold">Sincronizando{syncStatus.source ? ` ${syncStatus.source}` : ""}...</span>
+            <span className="text-gray-400 truncate max-w-md">{syncStatus.phase}</span>
+            {syncStatus.total > 0 && (
+              <span className="ml-auto shrink-0 text-gray-400">
+                {syncStatus.processed}/{syncStatus.total}
+              </span>
+            )}
+          </div>
+        )}
         {children}
       </div>
     </div>

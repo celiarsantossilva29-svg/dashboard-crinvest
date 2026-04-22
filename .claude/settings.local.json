@@ -29,7 +29,8 @@
       "WebFetch(domain:www.kommo.com)",
       "Bash(start:*)",
       "Bash(node --env-file=.env.local -e ':*)",
-      "Bash(node -e ' *)"
+      "Bash(node -e ' *)",
+      "Bash(node *)"
     ]
   }
 }

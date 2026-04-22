@@ -7,6 +7,16 @@ import { useSession } from "next-auth/react";
 
 // ─── Utils ────────────────────────────────────────────────────────────────────
 
+function maskCurrency(raw: string): string {
+  const digits = raw.replace(/\D/g, "");
+  if (!digits) return "";
+  const padded = digits.padStart(3, "0");
+  const intPart = padded.slice(0, -2).replace(/^0+(?=\d)/, "") || "0";
+  const decPart = padded.slice(-2);
+  const intFormatted = intPart.replace(/\B(?=(\d{3})+(?!\d))/g, ".");
+  return `${intFormatted},${decPart}`;
+}
+
 function fmtBRL(v: number) {
   return new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(v);
 }
@@ -77,6 +87,7 @@ export default function GestaoVendasPage() {
   // Venda Form States
   const [fClientName, setFClientName] = useState("");
   const [fCity, setFCity] = useState("");
+  const [fEstado, setFEstado] = useState("Selecione");
   const [fGender, setFGender] = useState("Selecione");
   const [fCivil, setFCivil] = useState("Selecione");
   const [fCpf, setFCpf] = useState("");
@@ -85,13 +96,19 @@ export default function GestaoVendasPage() {
   const [fAdmin, setFAdmin] = useState("Porto Seguro");
   const [fSdr, setFSdr] = useState("Prospecção direta (Sem SDR)");
   const [fCloser, setFCloser] = useState("");
+  const [fTipoProduto, setFTipoProduto] = useState<"Imóvel" | "Automóvel" | "">("");
+  const [fFinalidade, setFFinalidade] = useState("Selecione");
+  const [fParcelasComissao, setFParcelasComissao] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [editingSaleId, setEditingSaleId] = useState<string | null>(null);
 
+  const UF_LIST = ["AC","AL","AM","AP","BA","CE","DF","ES","GO","MA","MG","MS","MT","PA","PB","PE","PI","PR","RJ","RN","RO","RR","RS","SC","SE","SP","TO"];
+
   const resetForm = () => {
-    setFClientName(""); setFCity(""); setFGender("Selecione"); setFCivil("Selecione"); 
-    setFCpf(""); setFValue(""); setFClosedAt(""); setFAdmin("Porto Seguro"); 
+    setFClientName(""); setFCity(""); setFEstado("Selecione"); setFGender("Selecione"); setFCivil("Selecione");
+    setFCpf(""); setFValue(""); setFClosedAt(""); setFAdmin("Porto Seguro");
     setFSdr("Prospecção direta (Sem SDR)"); setFCloser(""); setIsCampanha(false);
+    setFTipoProduto(""); setFFinalidade("Selecione"); setFParcelasComissao("");
     setEditingSaleId(null);
   };
 
@@ -104,7 +121,7 @@ export default function GestaoVendasPage() {
     resetForm();
     setEditingSaleId(sale.id);
     setFClientName(sale.clientName);
-    setFValue(sale.value.toString());
+    setFValue(maskCurrency(Math.round(sale.value * 100).toString()));
     setFClosedAt(new Date(sale.closedAt).toISOString().split('T')[0]);
     setFCloser(sale.assignedTo);
     setFSdr(sale.sdrName || "Prospecção direta (Sem SDR)");
@@ -115,17 +132,29 @@ export default function GestaoVendasPage() {
     setIsCampanha(note.includes("Campanha Promocional Especial"));
     
     const cityMatch = note.match(/Cidade:\s*(.+)/);
+    const estadoMatch = note.match(/Estado:\s*(.+)/);
     const genderMatch = note.match(/Gênero:\s*(.+)/);
     const civilMatch = note.match(/Estado Civil:\s*(.+)/);
-    
+    const tipoMatch = note.match(/Tipo:\s*(.+)/);
+    const finalidadeMatch = note.match(/Finalidade:\s*(.+)/);
+    const parcelasMatch = note.match(/Parcelas comissão:\s*(.+)/);
+
     setFCity(cityMatch ? cityMatch[1] : "");
+    setFEstado(estadoMatch ? estadoMatch[1] : "Selecione");
     setFGender(genderMatch ? genderMatch[1] : "Selecione");
     setFCivil(civilMatch ? civilMatch[1] : "Selecione");
+    setFTipoProduto((tipoMatch ? tipoMatch[1] : "") as "Imóvel" | "Automóvel" | "");
+    setFFinalidade(finalidadeMatch ? finalidadeMatch[1] : "Selecione");
+    setFParcelasComissao(parcelasMatch ? parcelasMatch[1] : "");
 
     setIsModalOpen(true);
   };
 
   const handleRegisterSale = async () => {
+    if (editingSaleId && !isAdmin) {
+      alert("Apenas administradores podem alterar vendas registradas.");
+      return;
+    }
     if (!fClientName || !fValue || !fClosedAt || !fCloser || fCloser === "Selecione o Closer" || fCloser === "") {
        alert("Preencha todos os campos obrigatórios (Cliente, Valor, Data e Closer).");
        return;
@@ -145,9 +174,16 @@ export default function GestaoVendasPage() {
            sdrName: fSdr,
            administradora: fAdmin,
            clienteCpf: fCpf,
-           notes: isCampanha 
-              ? "Venda via Campanha Promocional Especial\n" + `Cidade: ${fCity}\nGênero: ${fGender}\nEstado Civil: ${fCivil}` 
-              : `Cidade: ${fCity}\nGênero: ${fGender}\nEstado Civil: ${fCivil}`,
+           notes: [
+              isCampanha ? "Venda via Campanha Promocional Especial" : null,
+              fCity ? `Cidade: ${fCity}` : null,
+              fEstado && fEstado !== "Selecione" ? `Estado: ${fEstado}` : null,
+              fGender && fGender !== "Selecione" ? `Gênero: ${fGender}` : null,
+              fCivil && fCivil !== "Selecione" ? `Estado Civil: ${fCivil}` : null,
+              fTipoProduto ? `Tipo: ${fTipoProduto}` : null,
+              fTipoProduto === "Imóvel" && fFinalidade !== "Selecione" ? `Finalidade: ${fFinalidade}` : null,
+              fParcelasComissao ? `Parcelas comissão: ${fParcelasComissao}` : null,
+            ].filter(Boolean).join("\n"),
         })
       });
       if (res.ok) {
@@ -172,24 +208,28 @@ export default function GestaoVendasPage() {
   const fetchSales = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetch(`/api/sales?start=${startDate}&end=${endDate}`);
-      const json = await res.json();
-      setSales(json.data || []);
+      const [salesRes, commRes, teamRes] = await Promise.all([
+        fetch(`/api/sales?start=${startDate}&end=${endDate}`),
+        fetch("/api/config/commission"),
+        fetch("/api/vendedores"),
+      ]);
 
-      const cRes = await fetch("/api/config/commission");
-      const cJson = await cRes.json();
-      if (cJson.data) setComissaoConfig({
-        fixedSalary: cJson.data.fixedSalary,
-        percentage: cJson.data.percentage,
-        installments: cJson.data.installments
+      const [salesJson, commJson, teamJson] = await Promise.all([
+        salesRes.json(),
+        commRes.json(),
+        teamRes.json(),
+      ]);
+
+      setSales(salesJson.data || []);
+
+      if (commJson.data) setComissaoConfig({
+        fixedSalary: commJson.data.fixedSalary,
+        percentage: commJson.data.percentage,
+        installments: commJson.data.installments,
       });
 
-      const tRes = await fetch("/api/vendedores");
-      const tJson = await tRes.json();
       const rules: Record<string, any> = {};
-      (tJson.data || []).forEach((v: any) => {
-        rules[v.nome] = v;
-      });
+      (teamJson.data || []).forEach((v: any) => { rules[v.nome] = v; });
       setTeamRules(rules);
 
     } catch (e) {
@@ -238,6 +278,7 @@ export default function GestaoVendasPage() {
       })();
       const matchSdr = !sdrFilter || (() => {
         const a = (s.sdrName ?? "").toLowerCase();
+        if (!a) return false;
         const f = sdrFilter.toLowerCase();
         return a.startsWith(f) || f.startsWith(a.split(" ")[0]);
       })();
@@ -599,9 +640,11 @@ export default function GestaoVendasPage() {
                           {fmtBRL(sale.value)}
                         </td>
                         <td className="py-4 text-right">
-                          <button onClick={() => openEditModal(sale)} className="text-gray-400 hover:text-[#d97706] transition-colors p-2">
-                            <Pencil size={16} />
-                          </button>
+                          {isAdmin && (
+                            <button onClick={() => openEditModal(sale)} className="text-gray-400 hover:text-[#d97706] transition-colors p-2">
+                              <Pencil size={16} />
+                            </button>
+                          )}
                         </td>
                       </tr>
                     ))
@@ -768,11 +811,23 @@ export default function GestaoVendasPage() {
                      <input type="text" value={fClientName} onChange={e=>setFClientName(e.target.value)} placeholder="Ex: João Silva Mendes" className="w-full px-4 py-3 bg-white border border-gray-200 rounded-xl text-[13px] focus:outline-none focus:ring-2 focus:ring-[#d97706]/20 transition-all text-[#111827]" />
                   </div>
 
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+                  {/* Localização */}
+                  <div className="grid grid-cols-2 gap-5">
                      <div className="flex flex-col gap-1.5">
                         <label className="text-[11px] font-bold text-gray-500">Cidade</label>
                         <input type="text" value={fCity} onChange={e=>setFCity(e.target.value)} placeholder="Ex: São Paulo" className="w-full px-4 py-3 bg-white border border-gray-200 rounded-xl text-[13px] focus:outline-none focus:ring-2 focus:ring-[#d97706]/20 transition-all text-[#111827]" />
                      </div>
+                     <div className="flex flex-col gap-1.5">
+                        <label className="text-[11px] font-bold text-gray-500">Estado (UF)</label>
+                        <select value={fEstado} onChange={e=>setFEstado(e.target.value)} className="w-full px-4 py-3 bg-white border border-gray-200 rounded-xl text-[13px] focus:outline-none focus:ring-2 focus:ring-[#d97706]/20 transition-all text-[#111827] appearance-none cursor-pointer">
+                           <option>Selecione</option>
+                           {UF_LIST.map(uf => <option key={uf}>{uf}</option>)}
+                        </select>
+                     </div>
+                  </div>
+
+                  {/* Perfil */}
+                  <div className="grid grid-cols-2 gap-5">
                      <div className="flex flex-col gap-1.5">
                         <label className="text-[11px] font-bold text-gray-500">Gênero</label>
                         <select value={fGender} onChange={e=>setFGender(e.target.value)} className="w-full px-4 py-3 bg-white border border-gray-200 rounded-xl text-[13px] focus:outline-none focus:ring-2 focus:ring-[#d97706]/20 transition-all text-[#111827] appearance-none cursor-pointer">
@@ -794,6 +849,58 @@ export default function GestaoVendasPage() {
                      </div>
                   </div>
 
+                  {/* Tipo de produto */}
+                  <div className="flex flex-col gap-2">
+                     <label className="text-[11px] font-bold text-gray-500">Tipo de produto</label>
+                     <div className="flex gap-3">
+                        {(["Imóvel", "Automóvel"] as const).map(tipo => (
+                           <button
+                              key={tipo}
+                              type="button"
+                              onClick={() => { setFTipoProduto(tipo); setFFinalidade("Selecione"); }}
+                              className={`flex-1 py-3 rounded-xl text-[13px] font-semibold border transition-all ${fTipoProduto === tipo ? "bg-[#1d1d1f] text-white border-[#1d1d1f]" : "bg-white text-gray-500 border-gray-200 hover:border-gray-400"}`}
+                           >
+                              {tipo === "Imóvel" ? "🏠 Imóvel" : "🚗 Automóvel"}
+                           </button>
+                        ))}
+                     </div>
+                  </div>
+
+                  {/* Finalidade (só para Imóvel) */}
+                  {fTipoProduto === "Imóvel" && (
+                     <div className="flex flex-col gap-2">
+                        <label className="text-[11px] font-bold text-gray-500">Finalidade</label>
+                        <div className="flex gap-3">
+                           {["Compra de casa", "Investimento", "Upgrade"].map(f => (
+                              <button
+                                 key={f}
+                                 type="button"
+                                 onClick={() => setFFinalidade(f)}
+                                 className={`flex-1 py-2.5 rounded-xl text-[12px] font-semibold border transition-all ${fFinalidade === f ? "bg-[#d97706] text-white border-[#d97706]" : "bg-white text-gray-500 border-gray-200 hover:border-gray-400"}`}
+                              >
+                                 {f}
+                              </button>
+                           ))}
+                        </div>
+                     </div>
+                  )}
+
+                  {/* Parcelas da comissão */}
+                  {fTipoProduto && (
+                     <div className="flex flex-col gap-1.5">
+                        <label className="text-[11px] font-bold text-gray-500">
+                           Parcelas da comissão
+                           <span className="ml-1 font-normal text-gray-400">({fTipoProduto === "Automóvel" ? "geralmente 1–3x" : "geralmente 12–60x"})</span>
+                        </label>
+                        <input
+                           type="number" min={1} max={120} value={fParcelasComissao}
+                           onChange={e => setFParcelasComissao(e.target.value)}
+                           placeholder={fTipoProduto === "Automóvel" ? "Ex: 1" : "Ex: 12"}
+                           className="w-full px-4 py-3 bg-white border border-gray-200 rounded-xl text-[13px] focus:outline-none focus:ring-2 focus:ring-[#d97706]/20 transition-all text-[#111827]"
+                        />
+                     </div>
+                  )}
+
                   <div className="grid grid-cols-2 gap-5">
                      <div className="flex flex-col gap-1.5">
                         <label className="text-[11px] font-bold text-gray-500">CPF do cliente</label>
@@ -801,7 +908,7 @@ export default function GestaoVendasPage() {
                      </div>
                      <div className="flex flex-col gap-1.5">
                         <label className="text-[11px] font-bold text-gray-500">Valor do crédito fechado (R$)</label>
-                        <input type="text" value={fValue} onChange={e=>setFValue(e.target.value)} placeholder="$ Ex: 500000.00" className="w-full px-4 py-3 bg-white border border-gray-200 rounded-xl text-[13px] focus:outline-none focus:ring-2 focus:ring-[#d97706]/20 transition-all text-[#111827]" />
+                        <input type="text" inputMode="numeric" value={fValue} onChange={e => setFValue(maskCurrency(e.target.value))} placeholder="Ex: 5.000.000,00" className="w-full px-4 py-3 bg-white border border-gray-200 rounded-xl text-[13px] focus:outline-none focus:ring-2 focus:ring-[#d97706]/20 transition-all text-[#111827]" />
                      </div>
                   </div>
 

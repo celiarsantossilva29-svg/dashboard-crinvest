@@ -46,6 +46,7 @@ export interface CloserApiResponse {
     ticketMedioGeral: number;
     taxaWinGeral: number;
     totalWon: number;
+    totalReunioes: number;
     noShowGeral: number;
     leadTimeMedioGeral: number;
   };
@@ -81,7 +82,7 @@ export async function GET(req: NextRequest) {
       ? buildMockResult(startDate, endDate)
       : await buildRealResult(startDate, endDate);
 
-    return NextResponse.json({ data: result, updatedAt, error: null });
+    return NextResponse.json({ data: result, updatedAt, error: null }, { headers: { 'Cache-Control': 'public, s-maxage=60, stale-while-revalidate=300' } });
   } catch (err: any) {
     return NextResponse.json(
       { data: null, updatedAt, error: err?.message ?? "Internal error" },
@@ -116,10 +117,10 @@ function buildMockResult(startDate: Date, endDate: Date): CloserApiResponse {
       const wonLeads = agentLeads.filter((l) => l.status === "won");
       const lostLeads = agentLeads.filter((l) => l.status === "lost");
       const meetingLeads = agentLeads.filter((l) =>
-        ["meeting", "won", "lost"].includes(l.status)
+        l.meetingAt != null || ["meeting", "won", "lost"].includes(l.status)
       );
       const scheduledLeads = agentLeads.filter((l) =>
-        ["scheduled", "meeting", "won", "lost"].includes(l.status)
+        l.scheduledAt != null || ["scheduled", "meeting", "won", "lost"].includes(l.status)
       );
 
       const vendas = wonLeads.length;
@@ -197,10 +198,10 @@ function buildMockResult(startDate: Date, endDate: Date): CloserApiResponse {
     .sort((a, b) => b.count - a.count);
 
   // Totals
-  const totalVendas = agents.reduce((s, a) => s + a.vendas, 0);
-  const totalReceita = agents.reduce((s, a) => s + a.receita, 0);
+  const totalVendas   = agents.reduce((s, a) => s + a.vendas, 0);
+  const totalReceita  = agents.reduce((s, a) => s + a.receita, 0);
+  const totalReunioes = agents.reduce((s, a) => s + a.totalReunioes, 0);
   const totalWon = leads.filter((l) => l.status === "won").length;
-  const totalDecided = leads.filter((l) => ["won", "lost"].includes(l.status)).length;
 
   return {
     agents,
@@ -211,8 +212,9 @@ function buildMockResult(startDate: Date, endDate: Date): CloserApiResponse {
       receita: parseFloat(totalReceita.toFixed(2)),
       ticketMedioGeral: totalVendas > 0 ? parseFloat((totalReceita / totalVendas).toFixed(2)) : 0,
       taxaWinGeral:
-        totalDecided > 0 ? parseFloat(((totalWon / totalDecided) * 100).toFixed(1)) : 0,
+        totalReunioes > 0 ? parseFloat(((totalVendas / totalReunioes) * 100).toFixed(1)) : 0,
       totalWon,
+      totalReunioes,
       noShowGeral: parseFloat(
         (agents.reduce((s, a) => s + a.taxaNoShow, 0) / Math.max(agents.length, 1)).toFixed(1)
       ),
@@ -233,7 +235,14 @@ async function buildRealResult(startDate: Date, endDate: Date): Promise<CloserAp
       orderBy: { closedAt: "desc" },
     }),
     prisma.lead.findMany({
-      where: { createdAt: { gte: startDate, lte: endDate } },
+      where: {
+        OR: [
+          { meetingAt:   { gte: startDate, lte: endDate } },
+          { scheduledAt: { gte: startDate, lte: endDate } },
+          { closedAt:    { gte: startDate, lte: endDate } },
+          { noShowAt:    { gte: startDate, lte: endDate } },
+        ],
+      },
       select: {
         id: true,
         assignedTo: true,
@@ -275,40 +284,44 @@ async function buildRealResult(startDate: Date, endDate: Date): Promise<CloserAp
       const agentSales = salesRows.filter((s) => matchesCloser(s.assignedTo, name));
       const agentLeads = leadsRows.filter((l) => l.assignedTo != null && matchesCloser(l.assignedTo, name));
 
-      const meetingLeads = agentLeads.filter((l) =>
-        ["meeting", "won", "lost"].includes(l.status)
-      );
+      // Reuniões realizadas NO PERÍODO:
+      // 1. meetingAt dentro do range (data exata conhecida), OU
+      // 2. closedAt no período com status won/lost (reunião claramente aconteceu, mas meetingAt não preenchido)
+      const meetingLeads = agentLeads.filter((l) => {
+        const meetingInPeriod = l.meetingAt != null && l.meetingAt >= startDate && l.meetingAt <= endDate;
+        const closedInPeriod  = l.closedAt  != null && l.closedAt  >= startDate && l.closedAt  <= endDate
+                                && ["won", "lost"].includes(l.status);
+        return meetingInPeriod || closedInPeriod;
+      });
+
+      // Agendamentos no período
       const scheduledLeads = agentLeads.filter((l) =>
-        l.scheduledAt != null || ["scheduled", "meeting", "won", "lost"].includes(l.status)
-      );
-      const reunioesRealizadas = agentLeads.filter((l) =>
-        l.meetingAt != null || ["meeting", "won", "lost"].includes(l.status)
+        l.scheduledAt != null && l.scheduledAt >= startDate && l.scheduledAt <= endDate
       );
 
-      // Fonte de verdade para vendas = tabela Sale (closer pode ter sales sem lead "won" associado)
-      const vendas        = agentSales.length;
-      const totalReunioes = meetingLeads.length;
-      const receita       = agentSales.reduce((s, sale) => s + sale.value, 0);
-      const ticketMedio   = vendas > 0 ? receita / vendas : 0;
-      const taxaWin       = totalReunioes > 0 ? (vendas / totalReunioes) * 100 : 0;
+      // Fonte de verdade para vendas = tabela Sale
+      const vendas           = agentSales.length;
+      const totalReunioes    = meetingLeads.length;
+      const receita          = agentSales.reduce((s, sale) => s + sale.value, 0);
+      const ticketMedio      = vendas > 0 ? receita / vendas : 0;
+      // Win rate = vendas fechadas no período / reuniões realizadas no período
+      const taxaWin          = totalReunioes > 0 ? (vendas / totalReunioes) * 100 : 0;
       const reunioesPorVenda = vendas > 0 ? parseFloat((totalReunioes / vendas).toFixed(1)) : 0;
 
-      // No-show: evento concreto do Kommo (noShowAt) — não usa aritmética
-      // porque meetingAt só é preenchido via GoTo Connect, não pelo avanço de etapa no Kommo.
-      const noShowCount = agentLeads.filter((l) => l.noShowAt != null).length;
-      const taxaNoShow  =
+      // No-show: noShowAt no período
+      const noShowCount = agentLeads.filter(
+        (l) => l.noShowAt != null && l.noShowAt >= startDate && l.noShowAt <= endDate
+      ).length;
+      const taxaNoShow =
         scheduledLeads.length > 0
           ? parseFloat(((noShowCount / scheduledLeads.length) * 100).toFixed(1))
           : 0;
 
-      // Lead Time: arrival → close for won leads
-      const wonLeadsWithDates = agentLeads.filter(
-        (l) => l.status === "won" && l.closedAt && (l.arrivalAt || l.createdAt)
-      );
-      const leadTimeSamples = wonLeadsWithDates.map((l) => {
-        const from = l.arrivalAt ?? l.createdAt;
-        return (l.closedAt!.getTime() - from.getTime()) / 86400000;
-      }).filter((v) => v >= 0);
+      // Lead Time: createdAt → closedAt para leads fechados no período
+      const leadTimeSamples = agentLeads
+        .filter((l) => l.closedAt != null && l.closedAt >= startDate && l.closedAt <= endDate)
+        .map((l) => (l.closedAt!.getTime() - l.createdAt.getTime()) / 86400000)
+        .filter((v) => v >= 0);
       const leadTimeTotalDias =
         leadTimeSamples.length > 0
           ? parseFloat((leadTimeSamples.reduce((s, v) => s + v, 0) / leadTimeSamples.length).toFixed(1))
@@ -366,14 +379,14 @@ async function buildRealResult(startDate: Date, endDate: Date): Promise<CloserAp
     .map(([reason, count]) => ({ reason, count }))
     .sort((a, b) => b.count - a.count);
 
-  const totalVendas = agents.reduce((s, a) => s + a.vendas, 0);
-  const totalReceita = agents.reduce((s, a) => s + a.receita, 0);
+  const totalVendas    = agents.reduce((s, a) => s + a.vendas, 0);
+  const totalReceita   = agents.reduce((s, a) => s + a.receita, 0);
+  const totalReunioes  = agents.reduce((s, a) => s + a.totalReunioes, 0);
   // Totais apenas sobre os leads dos closers cadastrados
   const closerLeads = leadsRows.filter((l) =>
     l.assignedTo != null && agentNames.some((n) => matchesCloser(l.assignedTo!, n))
   );
   const totalWon = closerLeads.filter((l) => l.status === "won").length;
-  const totalDecided = closerLeads.filter((l) => ["won", "lost"].includes(l.status)).length;
 
   return {
     agents,
@@ -384,9 +397,11 @@ async function buildRealResult(startDate: Date, endDate: Date): Promise<CloserAp
       receita: parseFloat(totalReceita.toFixed(2)),
       ticketMedioGeral:
         totalVendas > 0 ? parseFloat((totalReceita / totalVendas).toFixed(2)) : 0,
+      // Win rate = vendas / reuniões realizadas no período (mesma fórmula por agente)
       taxaWinGeral:
-        totalDecided > 0 ? parseFloat(((totalWon / totalDecided) * 100).toFixed(1)) : 0,
+        totalReunioes > 0 ? parseFloat(((totalVendas / totalReunioes) * 100).toFixed(1)) : 0,
       totalWon,
+      totalReunioes,
       noShowGeral: parseFloat(
         (agents.reduce((s, a) => s + a.taxaNoShow, 0) / Math.max(agents.length, 1)).toFixed(1)
       ),

@@ -17,7 +17,7 @@ export async function GET() {
       return NextResponse.json({ data: newConfig });
     }
 
-    return NextResponse.json({ data: config });
+    return NextResponse.json({ data: config }, { headers: { 'Cache-Control': 'public, s-maxage=60, stale-while-revalidate=300' } });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }

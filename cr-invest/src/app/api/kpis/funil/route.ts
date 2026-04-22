@@ -48,7 +48,15 @@ export async function GET(req: NextRequest) {
     const contatados  = leads.filter((l) => l.contactedAt != null || l.qualifiedAt != null || l.scheduledAt != null || l.meetingAt != null || l.status === "won" || ["contacted", "qualified", "scheduled", "meeting"].includes(l.status)).length;
     const qualificados = leads.filter((l) => l.qualifiedAt != null || l.scheduledAt != null || l.meetingAt != null || l.status === "won" || ["qualified", "scheduled", "meeting"].includes(l.status)).length;
     const agendamentos = leads.filter((l) => l.scheduledAt != null || l.meetingAt != null || l.status === "won" || ["scheduled", "meeting"].includes(l.status)).length;
-    const reunioes     = leads.filter((l) => l.meetingAt != null || l.status === "won" || l.status === "meeting").length;
+    // Reuniões realizadas no período:
+    // 1. meetingAt dentro do range, OU
+    // 2. closedAt no período com status won/lost (meetingAt não preenchido mas reunião aconteceu)
+    const reunioes = leads.filter((l) => {
+      const meetingInPeriod = l.meetingAt != null && l.meetingAt >= startDate && l.meetingAt <= endDate;
+      const closedInPeriod  = l.closedAt  != null && l.closedAt  >= startDate && l.closedAt  <= endDate
+                              && ["won", "lost"].includes(l.status);
+      return meetingInPeriod || closedInPeriod;
+    }).length;
 
     // Vendas: fonte de verdade é a tabela Sale (vendas validadas pelo time).
     // Lead.status === "won" não é confiável pois depende do sync do Kommo e
@@ -71,7 +79,7 @@ export async function GET(req: NextRequest) {
     // SDR = humanos com role SDR cadastrados
     // Outros = Célia Santos (closer que agendava diretamente) + user-XXXXX (ex-funcionários deletados)
     const IA_NAMES = new Set(["IA", "Sellmap"]);
-    const SDR_NAMES = new Set(["Cauê Perpétuo", "Eunice Dias", "Cauê"]);
+    const SDR_NAMES = new Set(["Cauê Perpétuo", "Cauê"]);
 
     const isOther = (sb: string | null) =>
       sb != null && !IA_NAMES.has(sb) && !SDR_NAMES.has(sb);
@@ -102,7 +110,7 @@ export async function GET(req: NextRequest) {
       data: { leadsGerados, contatados, qualificados, agendamentos, reunioes, vendas, conversions, agendamentosPorOrigem },
       updatedAt,
       error: null,
-    });
+    }, { headers: { 'Cache-Control': 'public, s-maxage=60, stale-while-revalidate=300' } });
   } catch (err: any) {
     return NextResponse.json(
       { data: null, updatedAt, error: err?.message ?? "Internal error" },

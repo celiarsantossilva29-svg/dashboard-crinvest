@@ -108,7 +108,7 @@ export async function GET(req: NextRequest) {
       ? buildMockResponse(startDate, endDate, now, numDays)
       : await buildRealResponse(startDate, endDate, now, numDays);
 
-    return NextResponse.json({ data: result, updatedAt, error: null });
+    return NextResponse.json({ data: result, updatedAt, error: null }, { headers: { 'Cache-Control': 'public, s-maxage=60, stale-while-revalidate=300' } });
   } catch (err: any) {
     console.error("[performance-sdr] Erro:", err?.stack ?? err?.message ?? err);
     return NextResponse.json(
@@ -217,7 +217,7 @@ function buildMockResponse(startDate: Date, endDate: Date, now: Date, numDays: n
       ligacoesPorDia,
       tarefasVencidas,
       agendamentos,
-      reunioes: Math.floor(agendamentos * 0.7),
+      reunioes,
       agendPorDia,
       agendPorSemana,
       taxaReagendamento,
@@ -344,7 +344,7 @@ async function buildRealResponse(startDate: Date, endDate: Date, now: Date, numD
   const dialerStart = new Date(startDate.toISOString().split("T")[0] + "T00:00:00Z");
   const dialerEnd = new Date(endDate.toISOString().split("T")[0] + "T23:59:59Z");
 
-  const [leadsRows, dialerRows, callLogRows, sdrVendedores, activeLeadsAll] = await Promise.all([
+  const [leadsRows, dialerRows, callLogRows, sdrVendedores] = await Promise.all([
     prisma.lead.findMany({
       where: {
         OR: [
@@ -384,21 +384,13 @@ async function buildRealResponse(startDate: Date, endDate: Date, now: Date, numD
       where: { date: { gte: dialerStart, lte: dialerEnd } },
       select: { agentName: true, totalCalls: true, talkTimeSecs: true },
     }),
-    // LeadCallLog: ligações mapeadas a leads por data (idempotente, BRT-scoped)
-    // Fallback para [] se a tabela ainda não existir (Prisma client desatualizado).
     (prisma as any).leadCallLog?.findMany({
       where: { source: "goto", date: { gte: dialerStart, lte: dialerEnd } },
       select: { leadId: true, agentId: true, agentName: true, callCount: true },
     }) ?? Promise.resolve([]),
-    // Busca apenas vendedores com role SDR para filtrar os agentes
     prisma.vendedor.findMany({
       where: { role: "SDR", status: "ATIVO" },
       select: { nome: true },
-    }),
-    // Carteira ativa de cada SDR: todos os leads ativos (não fechados) — denominator para lig/lead
-    prisma.lead.findMany({
-      where: { status: { notIn: ["won", "lost"] } },
-      select: { assignedTo: true },
     }),
   ]);
 
@@ -473,40 +465,37 @@ async function buildRealResponse(startDate: Date, endDate: Date, now: Date, numD
       (l) => l.nextTaskAt && l.nextTaskAt < now && !["won", "lost"].includes(l.status)
     ).length;
 
-    // ── Métricas de passagem de bastão atribuídas por scheduledBy ──────────────
-    // scheduledBy captura quem moveu o lead para "1ª Reunião Confirmada" no Kommo,
-    // independente de para quem o lead foi reatribuído depois (ex: Closer após a reunião).
-    // Isso garante que agendamentos de Cauê apareçam em Cauê mesmo após leads irem para Célia.
-    const matchesAgent = (scheduledBy: string | null) => {
-      if (!scheduledBy) return false;
-      const s = scheduledBy?.toLowerCase() ?? "";
-      const n = name?.toLowerCase() ?? "";
-      return s.startsWith(n) || n.startsWith(s.split(" ")[0]);
-    };
+    // ── Métricas de passagem de bastão — escopo total do período ─────────────
+    // Cauê gerencia todos os leads (IA + manuais), portanto as métricas de agendamento,
+    // reunião e no-show refletem o quadro completo da equipe no período.
+    // Não filtramos por scheduledBy para não excluir leads da IA ou de períodos anteriores
+    // que tiveram meeting/reagendamento agora.
 
-    const agendadosPorMim = leadsRows.filter((l) =>
-      matchesAgent(l.scheduledBy) && l.scheduledAt != null &&
-      l.scheduledAt >= startDate && l.scheduledAt <= endDate
+    // Agendamentos novos no período (qualquer origem: SDR, IA, etc.)
+    const todosAgendadosPeriodo = leadsRows.filter((l) =>
+      l.scheduledAt != null && l.scheduledAt >= startDate && l.scheduledAt <= endDate
     );
+    const agendamentos = todosAgendadosPeriodo.length;
 
-    const agendamentos = agendadosPorMim.length;
-
-    // Agendamentos realizados pela IA em leads que pertencem a este SDR (assignedTo)
+    // Para calcular agendamentosIa continuamos usando o filtro de origem IA
     const agendamentosIa = leadsRows.filter((l) =>
       IA_NAMES_SET.has(l.scheduledBy ?? "") &&
-      matchName(l.assignedTo) &&
       l.scheduledAt != null &&
       l.scheduledAt >= startDate && l.scheduledAt <= endDate
     ).length;
 
-    // Reuniões realizadas dos leads que este SDR agendou
-    const reunioes = agendadosPorMim.filter((l) =>
-      l.meetingAt != null || ["meeting", "won", "lost"].includes(l.status)
-    ).length;
+    // Reuniões realizadas NO PERÍODO — todos os leads com meetingAt no período
+    // + fallback: leads fechados (won/lost) no período sem meetingAt preenchido
+    // Inclui reuniões reagendadas que viraram realização (meetingAt >= reagendadoAt)
+    const reunioes = leadsRows.filter((l) => {
+      const meetingInPeriod = l.meetingAt != null && l.meetingAt >= startDate && l.meetingAt <= endDate;
+      const closedInPeriod  = l.closedAt  != null && l.closedAt  >= startDate && l.closedAt  <= endDate
+                              && ["won", "lost"].includes(l.status);
+      return meetingInPeriod || closedInPeriod;
+    }).length;
 
-    // Reagendamentos bem-sucedidos (reagendadoAt = SDR reconverteu um no-show)
-    // Atribuídos ao SDR pelo scheduledBy original
-    const reagendados = agendadosPorMim.filter((l) => {
+    // Reagendamentos no período (leads que tiveram no-show e foram reconvocados)
+    const reagendados = leadsRows.filter((l) => {
       const ts = l.reagendadoAt;
       return ts != null && ts >= startDate && ts <= endDate;
     }).length;
@@ -515,20 +504,20 @@ async function buildRealResponse(startDate: Date, endDate: Date, now: Date, numD
     // agendPorSemana = média semanal (5 dias úteis = 1 semana)
     const agendPorSemana = parseFloat((agendamentos / (businessDays / 5)).toFixed(1));
 
-    // Taxa de reagendamento: dos leads que este SDR agendou e tiveram no-show, quantos voltou a converter
-    const reagendadosForRate = agendadosPorMim.filter((l) => l.isReagendado || l.reagendadoAt);
-    const reagendadosConvertidos = reagendadosForRate.filter((l) =>
-      ["scheduled", "meeting", "won"].includes(l.status)
-    ).length;
+    // Taxa de reagendamento: dos leads reagendados no período, quantos viraram reunião
+    const reagendadosComMeeting = leadsRows.filter((l) => {
+      const ts = l.reagendadoAt;
+      if (!ts || ts < startDate || ts > endDate) return false;
+      // Virou reunião se meetingAt existe após o reagendamento
+      return l.meetingAt != null && l.meetingAt >= ts;
+    }).length;
     const taxaReagendamento =
-      reagendadosForRate.length > 0
-        ? parseFloat(((reagendadosConvertidos / reagendadosForRate.length) * 100).toFixed(1))
+      reagendados > 0
+        ? parseFloat(((reagendadosComMeeting / reagendados) * 100).toFixed(1))
         : 0;
 
-    // No-Show: eventos noShowAt no período em leads agendados por este SDR.
-    // Não usa aritmética (agend - reuniões) porque meetingAt só é preenchido via GoTo Connect.
-    // O campo noShowAt registra o evento concreto de no-show vindo do Kommo.
-    const noShowsNoPeriodo = agendadosPorMim.filter((l) =>
+    // No-Show: todos os eventos noShowAt no período
+    const noShowsNoPeriodo = leadsRows.filter((l) =>
       l.noShowAt != null && l.noShowAt >= startDate && l.noShowAt <= endDate
     ).length;
     const taxaNoShow = agendamentos > 0 ? parseFloat(((noShowsNoPeriodo / agendamentos) * 100).toFixed(1)) : 0;
@@ -564,14 +553,11 @@ async function buildRealResponse(startDate: Date, endDate: Date, now: Date, numD
     });
     const totalMappedCalls = agentCallLogs.reduce((s, c) => s + c.callCount, 0);
     const uniqueLeadsCalled = new Set(agentCallLogs.map(c => c.leadId)).size;
-    // Carteira ativa: todos os leads ativos (não fechados) sob responsabilidade deste SDR
-    const activeLeadsAgent = activeLeadsAll.filter((l) => matchName(l.assignedTo)).length;
-    // lig/lead = ligações do período / carteira ativa (visão de cadência)
-    // Fallback por prioridade: LeadCallLog → ligações totais / carteira ativa → 0
+    // lig/lead: LeadCallLog se disponível, senão ligações / leads do período
     const ligacoesPorLead = uniqueLeadsCalled > 0
       ? parseFloat((totalMappedCalls / uniqueLeadsCalled).toFixed(1))
-      : activeLeadsAgent > 0
-        ? parseFloat((ligacoes / activeLeadsAgent).toFixed(1))
+      : agentLeadsPeriod.length > 0
+        ? parseFloat((ligacoes / agentLeadsPeriod.length).toFixed(1))
         : 0;
     // ligacoesPorDia: total de ligações do discador / dias úteis decorridos
     const ligacoesPorDia = parseFloat((ligacoes / businessDays).toFixed(1));
@@ -603,34 +589,36 @@ async function buildRealResponse(startDate: Date, endDate: Date, now: Date, numD
     };
   }).sort((a, b) => b.agendamentos - a.agendamentos);
 
-  // ... skip intermediate until daily Leads ...
-  // Daily leads breakdown
+  // Daily leads — pré-indexa por data para evitar O(dias × leads) de filtragens
+  const toDateBRT = (d: Date) => new Date(d.getTime() - 3 * 3600 * 1000).toISOString().split("T")[0];
+  const dailyMap: Record<string, { leads: number; scheduled: number; reagendado: number; meeting: number }> = {};
+  for (const l of leadsRows) {
+    const inc = (date: Date | null | undefined, field: "leads" | "scheduled" | "reagendado" | "meeting") => {
+      if (!date) return;
+      const k = toDateBRT(date);
+      if (!dailyMap[k]) dailyMap[k] = { leads: 0, scheduled: 0, reagendado: 0, meeting: 0 };
+      dailyMap[k][field]++;
+    };
+    inc(l.createdAt, "leads");
+    inc(l.scheduledAt, "scheduled");
+    inc(l.reagendadoAt, "reagendado");
+    inc(l.meetingAt, "meeting");
+  }
+
   const dailyLeads = Array.from({ length: numDays }).map((_, i) => {
     const d = new Date(startDate);
     d.setDate(d.getDate() + i);
-    const dateStr = d.toISOString().split("T")[0]; // YYYY-MM-DD in UTC (since start is UTC midnight)
-    
-    // Convert DB timestamp to GMT-3 to match BR local time string formats
-    const dayLeads = leadsRows.filter((l) => {
-      const gmt3 = new Date(l.createdAt.getTime() - 3 * 3600 * 1000);
-      return gmt3.toISOString().split("T")[0] === dateStr;
-    }).length;
-    
-    const dayScheduled = leadsRows.filter((l) => {
-      if (!l.scheduledAt) return false;
-      const gmt3 = new Date(l.scheduledAt.getTime() - 3 * 3600 * 1000);
-      return gmt3.toISOString().split("T")[0] === dateStr;
-    }).length;
-
-    const dayReagendado = leadsRows.filter((l) => {
-      if (!l.reagendadoAt) return false;
-      const gmt3 = new Date(l.reagendadoAt.getTime() - 3 * 3600 * 1000);
-      return gmt3.toISOString().split("T")[0] === dateStr;
-    }).length;
-    
-    // O gráfico usará a soma (esforço total), mas a API manda separado também
+    const dateStr = d.toISOString().split("T")[0];
+    const m = dailyMap[dateStr] ?? { leads: 0, scheduled: 0, reagendado: 0, meeting: 0 };
     const actualDay = parseInt(dateStr.split("-")[2], 10);
-    return { dia: actualDay, date: dateStr, leads: dayLeads, agendamentos: dayScheduled + dayReagendado, novosAgendamentos: dayScheduled, reagendamentosEfetivados: dayReagendado };
+    return {
+      dia: actualDay, date: dateStr,
+      leads: m.leads,
+      agendamentos: m.scheduled + m.reagendado,
+      novosAgendamentos: m.scheduled,
+      reagendamentosEfetivados: m.reagendado,
+      reunioes: m.meeting,
+    };
   });
 
   const totLeads = leadsRows.filter(l => l.createdAt >= startDate && l.createdAt <= endDate).length;

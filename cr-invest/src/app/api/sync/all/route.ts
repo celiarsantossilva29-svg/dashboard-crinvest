@@ -1,8 +1,10 @@
 // GET /api/sync/all — dispara todos os syncs em background e retorna imediatamente
 
 export const dynamic = "force-dynamic";
+export const maxDuration = 300; // 5 min — necessário para syncs longos no Vercel
 
 import { NextResponse } from "next/server";
+import { waitUntil } from "@vercel/functions";
 import { syncKommoData } from "@/services/kommo";
 import { syncFacebookAds } from "@/services/facebook";
 import { syncGoToData } from "@/services/goto";
@@ -23,14 +25,14 @@ export async function GET() {
   const startDate = new Date();
   startDate.setDate(startDate.getDate() - 30);
 
-  // Disparar todos em background — não aguarda conclusão
-  Promise.allSettled([
-    syncKommoData(),
-    syncFacebookAds(startDate, endDate),
-    syncGoToData(startDate, endDate),
-  ]).catch((err) => {
-    console.error("[sync/all] background error:", err?.message);
-  });
+  // waitUntil garante que o Vercel mantém a função viva até todos os syncs terminarem
+  waitUntil(
+    Promise.allSettled([
+      syncKommoData(),
+      syncFacebookAds(startDate, endDate),
+      syncGoToData(startDate, endDate),
+    ])
+  );
 
   return NextResponse.json({ data: { started: true }, updatedAt, error: null });
 }

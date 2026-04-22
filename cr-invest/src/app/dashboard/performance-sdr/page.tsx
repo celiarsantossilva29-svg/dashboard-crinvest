@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useCallback } from "react";
 import {
-  LineChart, Line, BarChart, Bar, Legend, XAxis, YAxis, ReferenceLine, ResponsiveContainer, Tooltip as RechartsTooltip, CartesianGrid
+  BarChart, Bar, LabelList, Legend, XAxis, YAxis, ReferenceLine, ResponsiveContainer, Tooltip as RechartsTooltip, CartesianGrid, ReferenceArea
 } from "recharts";
 import { useSession } from "next-auth/react";
 
@@ -88,6 +88,7 @@ export default function PerformanceSdrPage() {
   
   const [apiData, setApiData] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
+  const [drillMonth, setDrillMonth] = useState<string | null>(null); // "2025-3" → drill dia
   const [sales, setSales] = useState<any[]>([]);
   const [metaGeral, setMetaGeral] = useState<any>(null);
   const [metaGeralInput, setMetaGeralInput] = useState<string>("");
@@ -95,6 +96,7 @@ export default function PerformanceSdrPage() {
   const [metaAgend, setMetaAgend] = useState<number>(0);
   const [metaAgendInput, setMetaAgendInput] = useState<string>("");
   const [savingMeta, setSavingMeta] = useState(false);
+  const [cadenciaData, setCadenciaData] = useState<any>(null);
   const { data: session } = useSession();
 
   // Scope enforcement
@@ -215,19 +217,22 @@ export default function PerformanceSdrPage() {
     if (!isInitialized || !start || !end) return;
     setError(null);
     try {
-      const [res, resSales, resMeta] = await Promise.all([
+      const agentParam = selectedAgent ? `&agent=${encodeURIComponent(selectedAgent)}` : "";
+      const [res, resSales, resMeta, resCadencia] = await Promise.all([
         fetch(`/api/kpis/performance-sdr?start=${start}&end=${end}`),
         fetch(`/api/sales?start=${start}&end=${end}`),
         fetch("/api/kpis/meta?originSdr=true"),
+        fetch(`/api/kpis/cadencia?start=${start}&end=${end}${agentParam}`),
       ]);
-      const [json, jsonSales, jsonMeta] = await Promise.all([
-        res.json(), resSales.json(), resMeta.json(),
+      const [json, jsonSales, jsonMeta, jsonCadencia] = await Promise.all([
+        res.json(), resSales.json(), resMeta.json(), resCadencia.json(),
       ]);
 
       if (json.error) throw new Error(json.error);
       setApiData(json.data);
       setSales(jsonSales.data || []);
       if (jsonMeta.data) setMetaGeral(jsonMeta.data);
+      if (jsonCadencia.data) setCadenciaData(jsonCadencia.data);
       
       // Persist values
       localStorage.setItem("perf-sdr-start", start);
@@ -263,11 +268,11 @@ export default function PerformanceSdrPage() {
   
   const displayed = selectedAgent ? stats.filter((r: any) => r.agentName === selectedAgent) : stats;
 
-  // Total de agendamentos:
+  // Total de agendamentos (Funil Ativo e gráfico — sem IA):
   // - sem filtro: usa o total real (todos scheduledAt no período, qualquer scheduledBy)
-  // - com filtro de agente: usa os agendamentos daquele SDR
+  // - com filtro de agente: só os agendamentos daquele SDR
   const sdrAgend = displayed.reduce((s: number, r: any) => s + (r.agendamentos || 0), 0);
-  const iaAgend   = !selectedAgent ? (apiData?.agendamentosPorOrigem?.ia?.agendamentos    ?? 0) : 0;
+  const iaAgend   = !selectedAgent ? (apiData?.agendamentosPorOrigem?.ia?.agendamentos ?? 0) : 0;
   const totalAgendamentos = !selectedAgent
     ? (apiData?.agendamentosPorOrigem?.total ?? sdrAgend)
     : sdrAgend;
@@ -540,13 +545,17 @@ export default function PerformanceSdrPage() {
               const cols = 1 + sdrStats.length + (other.agendamentos > 0 ? 1 : 0);
               const gridCols = cols <= 2 ? "grid-cols-2" : cols === 3 ? "grid-cols-3" : "grid-cols-4";
 
-              const PanelCard = ({ label, avatar, bg, agendamentos, noShows, taxaNoShow, highlight }: any) => {
+              const PanelCard = ({ label, avatar, bg, agendamentos, noShows, taxaNoShow, highlight, conversao, taxaRetorno, score }: any) => {
                 const nsColor = taxaNoShow > 35 ? "text-[#DC2626]" : "text-[#16A34A]";
+                const convColor = conversao != null ? (conversao >= 35 ? "text-[#16A34A]" : "text-[#DC2626]") : null;
                 return (
                   <div className={`rounded-[10px] border p-4 ${highlight ? "border-[#b49136] bg-[#fffbeb]" : "border-[#f0f0f5] bg-[#fafafa]"}`}>
                     <div className="flex items-center gap-2 mb-4">
                       <div className={`w-6 h-6 rounded-full flex items-center justify-center text-white text-[10px] font-bold ${bg}`}>{avatar}</div>
                       <span className="font-semibold text-[12px] text-[#1d1d1f] truncate">{label}</span>
+                      {score != null && score > 0 && (
+                        <span className="ml-auto text-[10px] bg-[#f0fdf4] text-[#16a34a] font-bold px-1.5 py-0.5 rounded">{score} ★</span>
+                      )}
                     </div>
                     <div className="space-y-2">
                       <div className="flex justify-between items-center">
@@ -561,6 +570,18 @@ export default function PerformanceSdrPage() {
                         <span className="text-[11px] text-[#86868b]">Taxa no-show</span>
                         <span className={`font-black text-[16px] ${nsColor}`}>{taxaNoShow.toFixed(1)}%</span>
                       </div>
+                      {conversao != null && (
+                        <div className="flex justify-between items-center">
+                          <span className="text-[11px] text-[#86868b]">Conversão SDR</span>
+                          <span className={`font-bold text-[14px] ${convColor}`}>{conversao.toFixed(1)}%</span>
+                        </div>
+                      )}
+                      {taxaRetorno != null && taxaRetorno > 0 && (
+                        <div className="flex justify-between items-center">
+                          <span className="text-[11px] text-[#86868b]">Taxa de retorno</span>
+                          <span className="font-bold text-[14px] text-[#374151]">{taxaRetorno.toFixed(1)}%</span>
+                        </div>
+                      )}
                     </div>
                   </div>
                 );
@@ -572,18 +593,24 @@ export default function PerformanceSdrPage() {
                 <>
                   <div className={`grid ${gridCols} gap-4 mb-5`}>
                     <PanelCard label="IA (Automático)" avatar="IA" bg="bg-[#1d1d1f]" agendamentos={ia.agendamentos} noShows={ia.noShows} taxaNoShow={ia.taxaNoShow} highlight={false} />
-                    {sdrStats.map((sdr: any) => (
-                      <PanelCard
-                        key={sdr.agentName}
-                        label={sdr.agentName}
-                        avatar={sdr.agentName.charAt(0).toUpperCase()}
-                        bg="bg-[#b49136]"
-                        agendamentos={sdr.agendamentos}
-                        noShows={sdr.noShowsNoPeriodo ?? 0}
-                        taxaNoShow={sdr.taxaNoShow ?? 0}
-                        highlight={selectedAgent === sdr.agentName}
-                      />
-                    ))}
+                    {sdrStats.map((sdr: any) => {
+                      const conv = sdr.leadsGerados > 0 ? (sdr.agendamentos / sdr.leadsGerados) * 100 : null;
+                      return (
+                        <PanelCard
+                          key={sdr.agentName}
+                          label={sdr.agentName}
+                          avatar={sdr.agentName.charAt(0).toUpperCase()}
+                          bg="bg-[#b49136]"
+                          agendamentos={sdr.agendamentos}
+                          noShows={sdr.noShowsNoPeriodo ?? 0}
+                          taxaNoShow={sdr.taxaNoShow ?? 0}
+                          highlight={selectedAgent === sdr.agentName}
+                          conversao={conv}
+                          taxaRetorno={sdr.taxaReagendamento ?? null}
+                          score={sdr.sdrScoreMedia > 0 ? Math.round(sdr.sdrScoreMedia) : null}
+                        />
+                      );
+                    })}
                     {other.agendamentos > 0 && (
                       <PanelCard label="Outros" avatar="?" bg="bg-[#9ca3af]" agendamentos={other.agendamentos} noShows={other.noShows} taxaNoShow={other.taxaNoShow} highlight={false} />
                     )}
@@ -660,215 +687,387 @@ export default function PerformanceSdrPage() {
         </div>
 
         {/* ── EVOLUÇÃO DIÁRIA ─────────────────────────────────────────────── */}
-        <div className="mb-8 relative">
-          <div className="flex items-center justify-between mb-2 pr-2">
-             <h2 className="text-[11px] font-semibold text-[#86868b] uppercase tracking-wider">Evolução Diária – Agendamentos</h2>
-             <div className="flex items-center gap-2">
-                <div className="w-12 h-0.5 bg-[#d97706] rounded-full"></div>
-                <span className="text-[11px] font-bold text-[#86868b]">Meta: 4/dia</span>
-             </div>
-          </div>
-          
-          <div className="bg-white rounded-xl border border-[#e5e5ea] shadow-sm h-[200px] p-4 pt-8">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={mockDailyLeads} margin={{ top: 10, right: 20, left: -20, bottom: 0 }}>
-                <CartesianGrid vertical={false} stroke="#f0f0f5" strokeDasharray="3 3" />
-                <XAxis dataKey="dia" tick={{ fontSize: 11, fill: "#9ca3af" }} axisLine={false} tickLine={false} dy={10} />
-                <YAxis tick={{ fontSize: 11, fill: "#9ca3af" }} axisLine={false} tickLine={false} dx={-10} />
-                <RechartsTooltip {...TOOLTIP_STYLE} formatter={(v: any, name: any) => [`${Math.round(v)}`, String(name).includes("Entrada") || name === "leads" ? "Entraram" : "Agendados"]} labelFormatter={(l) => `Dia ${l}`} />
-                <Legend iconType="circle" wrapperStyle={{ fontSize: 11, color: "#86868b", paddingTop: "5px" }} />
-                <ReferenceLine y={4} stroke="#d97706" strokeWidth={1.5} />
-                <Bar dataKey="leads" fill="#9ca3af" radius={[2, 2, 0, 0]} name='Leads ("Entrada")' />
-                <Bar dataKey="agendamentos" fill="#2563EB" radius={[2, 2, 0, 0]} name="Agendamentos" />
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-        </div>
+        {(() => {
+          const MONTH_SHORT = ["Jan","Fev","Mar","Abr","Mai","Jun","Jul","Ago","Set","Out","Nov","Dez"];
+          const allDays = mockDailyLeads as any[];
 
-        {/* ── GRID INFERIOR ───────────────────────────────────────────────── */}
-        <div className="flex flex-col lg:flex-row gap-6 items-stretch">
+          type MonthBucket = { key: string; label: string; leads: number; agendamentos: number; reunioes: number; pct: number; days: any[] };
+          const monthMap = new Map<string, MonthBucket>();
+          for (const entry of allDays) {
+            if (!entry.date) continue;
+            const d = new Date(entry.date + "T12:00:00");
+            const key = `${d.getFullYear()}-${d.getMonth()}`;
+            if (!monthMap.has(key)) monthMap.set(key, { key, label: `${MONTH_SHORT[d.getMonth()]} ${d.getFullYear()}`, leads: 0, agendamentos: 0, reunioes: 0, pct: 0, days: [] });
+            const b = monthMap.get(key)!;
+            b.leads += entry.leads ?? 0;
+            b.agendamentos += entry.novosAgendamentos ?? entry.agendamentos ?? 0;
+            b.reunioes += entry.reunioes ?? 0;
+            b.days.push(entry);
+          }
+          // % conversão = agendamentos / leads por mês
+          const months = Array.from(monthMap.values()).map(m => ({
+            ...m,
+            pct: m.leads > 0 ? parseFloat(((m.agendamentos / m.leads) * 100).toFixed(0)) : 0,
+          }));
+          const isMultiMonth = months.length > 1;
+          const viewMonthly = isMultiMonth && drillMonth === null;
+          const dailyData = (drillMonth && drillMonth !== "__all__")
+            ? (monthMap.get(drillMonth)?.days ?? allDays)
+            : allDays;
+          const BAR_W = 18;
+          const dailyW = Math.max(dailyData.length * BAR_W, 400);
 
-          {/* LADO ESQUERDO (65%) */}
-          <div className="w-full lg:w-[63%] flex flex-col gap-4">
-             
-             {/* Resultados de Agendamentos */}
-             <div className="bg-white rounded-xl border border-[#e5e5ea] shadow-sm p-6">
-                <h3 className="text-[14px] font-bold text-[#1d1d1f] mb-6">Resultados de Agendamentos</h3>
-                
-                <div className="flex">
-                   <div className="w-1/2 pr-6 flex flex-col gap-5 border-r border-[#f0f0f5]">
-                      <div className="flex items-center justify-between">
-                         <span className="text-[13px] text-[#374151]">Novos Agend. (Hoje)</span>
-                         <div className="bg-[#f3f4f6] text-[#1d1d1f] font-bold rounded px-4 py-1.5 text-[15px]">{(() => { const today = new Date(); const dayNum = today.getDate(); const entry = (apiData?.dailyLeads ?? []).find((d: any) => d.dia === dayNum); return entry?.novosAgendamentos ?? 0; })()}</div>
-                      </div>
-                      <div className="flex items-center justify-between">
-                         <span className="text-[13px] text-[#374151]">Reagendados (Hoje)</span>
-                         <div className="bg-[#f3f4f6] text-[#1d1d1f] font-bold rounded px-4 py-1.5 text-[15px]">{(() => { const today = new Date(); const dayNum = today.getDate(); const entry = (apiData?.dailyLeads ?? []).find((d: any) => d.dia === dayNum); return entry?.reagendamentosEfetivados ?? 0; })()}</div>
-                      </div>
-                   </div>
-                   <div className="w-1/2 pl-6 flex flex-col gap-5">
-                      <div className="flex items-center justify-between">
-                         <span className="text-[13px] text-[#374151]">Agendamentos</span>
-                         <span className="font-medium text-[16px]">{displayed.reduce((s: any, r: any) => s + r.agendamentos, 0)}</span>
-                      </div>
-                      <div className="flex items-center justify-between">
-                         <div className="flex items-center gap-2">
-                           <span className="text-[13px] text-[#374151]">Conversão SDR</span>
-                           <span className="text-[9px] text-[#9ca3af] leading-tight">Agendamentos ÷ Leads<br/>atendimento</span>
-                         </div>
-                         {(() => { const ag = displayed.reduce((s: any, r: any) => s + r.agendamentos, 0); const lg = displayed.reduce((s: any, r: any) => s + r.leadsGerados, 0); const val = lg > 0 ? (ag / lg) * 100 : 0; return <span className={`font-bold text-[16px] ${val >= 35 ? "text-[#16A34A]" : "text-[#DC2626]"}`}>{val.toFixed(1)}%</span>; })()}
-                      </div>
-                   </div>
+          const tooltipLabelMonthly = (val: any) => months.find(m => m.label === val)?.label ?? String(val);
+          const tooltipLabelDaily = (val: any) => {
+            const entry = dailyData.find((d: any) => d.dia === val);
+            if (!entry?.date) return `Dia ${val}`;
+            return new Intl.DateTimeFormat("pt-BR", { day: "2-digit", month: "short" }).format(new Date(entry.date + "T12:00:00"));
+          };
+
+          return (
+            <div className="mb-8">
+              {/* header com navegação */}
+              <div className="flex items-center justify-between mb-2 pr-2">
+                <div className="flex items-center gap-3">
+                  <h2 className="text-[11px] font-semibold text-[#86868b] uppercase tracking-wider">
+                    Evolução – Agendamentos
+                  </h2>
+                  {/* breadcrumb */}
+                  {isMultiMonth && (
+                    <div className="flex items-center gap-1 text-[11px]">
+                      <button onClick={() => setDrillMonth(null)} className={`transition-colors ${viewMonthly ? "text-[#1d1d1f] font-semibold" : "text-[#2563EB] hover:underline"}`}>
+                        Geral
+                      </button>
+                      {drillMonth && (
+                        <>
+                          <span className="text-[#9ca3af]">›</span>
+                          <span className="text-[#1d1d1f] font-semibold">
+                            {drillMonth === "__all__" ? "Todos os dias" : monthMap.get(drillMonth)?.label}
+                          </span>
+                        </>
+                      )}
+                    </div>
+                  )}
                 </div>
-             </div>
-
-             {/* Passagem de Bastão + Passagem a SDR — lado a lado */}
-             <div className="flex gap-4">
-                <div className="flex-1 bg-white rounded-xl border border-[#e5e5ea] shadow-sm p-5">
-                   <h3 className="text-[13px] font-bold text-[#1d1d1f] mb-4">Passagem de Bastão SDR → Closer</h3>
-                   <div className="flex flex-col gap-3">
-                      <div className="flex items-center justify-between">
-                         <span className="text-[12px] text-[#374151]">Leads passados a Closer</span>
-                         <div className="bg-[#f3f4f6] text-[#1d1d1f] font-bold rounded px-3 py-1 text-[15px]">{displayed.reduce((s: any, r: any) => s + (r.reunioes || 0), 0)}</div>
-                      </div>
-                      <div className="flex items-center justify-between border-t border-[#f0f0f5] pt-3">
-                         <span className="text-[12px] text-[#374151]">Tarefas abertas</span>
-                         <div className="bg-[#f3f4f6] text-[#1d1d1f] font-bold rounded px-3 py-1 text-[15px]">{totais?.tarefasVencidas ?? 0}</div>
-                      </div>
-                   </div>
+                <div className="flex items-center gap-3">
+                  {!viewMonthly && (
+                    <div className="flex items-center gap-2">
+                      <div className="w-8 h-0.5 bg-[#d97706] rounded-full"></div>
+                      <span className="text-[10px] text-[#86868b]">Meta: 4/dia</span>
+                    </div>
+                  )}
+                  {/* botão drill ↓ / ↑ */}
+                  {isMultiMonth && (
+                    <button
+                      onClick={() => setDrillMonth(viewMonthly ? "__all__" : null)}
+                      title={viewMonthly ? "Ver por dia" : "Ver por mês"}
+                      className="w-7 h-7 flex items-center justify-center rounded-md border border-[#e5e5ea] bg-white hover:bg-[#f0f0f5] transition-colors"
+                    >
+                      <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                        {viewMonthly
+                          ? <path d="M2 4l4 4 4-4" stroke="#6b7280" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                          : <path d="M2 8l4-4 4 4" stroke="#6b7280" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                        }
+                      </svg>
+                    </button>
+                  )}
                 </div>
+              </div>
 
-                <div className="flex-1 bg-white rounded-xl border border-[#e5e5ea] shadow-sm p-5">
-                   <h3 className="text-[13px] font-bold text-[#1d1d1f] mb-4">Passagem a SDR</h3>
-                   <div className="flex items-center justify-between">
-                      <span className="text-[12px] text-[#374151]">Leads recebidos no período</span>
-                      <div className="bg-[#f3f4f6] text-[#1d1d1f] font-bold rounded px-3 py-1 text-[15px]">{totais?.leadsGerados ?? 0}</div>
-                   </div>
-                   <div className="flex items-center justify-between border-t border-[#f0f0f5] pt-3 mt-3">
-                      <span className="text-[12px] text-[#374151]">No funil</span>
-                      <div className="bg-[#f3f4f6] text-[#1d1d1f] font-bold rounded px-3 py-1 text-[15px]">{totais?.leadsNoFunil ?? 0}</div>
-                   </div>
-                </div>
-             </div>
-
-          </div>
-
-          {/* LADO DIREITO (37%) */}
-          <div className="w-full lg:w-[37%] flex flex-col gap-6">
-             
-             {/* Qualidade do SDR */}
-             <div className="bg-white rounded-xl border border-[#e5e5ea] shadow-sm p-6">
-                <h3 className="text-[14px] font-bold text-[#1d1d1f] mb-5">Qualidade do SDR</h3>
-
-                <div className="grid grid-cols-2 gap-4">
-                  {/* No-show */}
-                  {(() => {
-                    const ag = displayed.reduce((s: any, x: any) => s + (x.agendamentos || 0), 0);
-                    const ns = displayed.reduce((s: any, x: any) => s + (x.noShowsNoPeriodo || 0), 0);
-                    const val = ag > 0 ? parseFloat(((ns / ag) * 100).toFixed(1)) : 0;
-                    const isOk = val <= 35;
+              <div className="bg-white rounded-xl border border-[#e5e5ea] shadow-sm p-4">
+                {viewMonthly ? (
+                  /* ── VISTA MENSAL (responsiva, sem scroll) ── */
+                  <ResponsiveContainer width="100%" height={185}>
+                    <BarChart data={months} barCategoryGap="30%" barGap={0} margin={{ top: 24, right: 10, left: -20, bottom: 0 }}>
+                      <CartesianGrid vertical={false} stroke="#f0f0f5" strokeDasharray="3 3" />
+                      <XAxis dataKey="label" tickFormatter={(v) => String(v).split(" ")[0]} tick={{ fontSize: 11, fill: "#9ca3af" }} axisLine={false} tickLine={false} dy={6} interval={0} />
+                      <YAxis tick={{ fontSize: 10, fill: "#9ca3af" }} axisLine={false} tickLine={false} dx={-6} />
+                      <RechartsTooltip {...TOOLTIP_STYLE} formatter={(v: any, name: any) => {
+                        if (name === "leads") return [`${Math.round(v)}`, "Leads recebidos"];
+                        return [`${Math.round(v)}`, "Agendamentos"];
+                      }} labelFormatter={tooltipLabelMonthly} />
+                      <Legend iconType="circle" wrapperStyle={{ fontSize: 11, color: "#86868b", paddingTop: "4px" }} formatter={(v) => v === "leads" ? "Leads" : "Agendamentos"} />
+                      <Bar dataKey="leads" fill="#e5e7eb" radius={[3, 3, 0, 0]} name="leads" maxBarSize={80} />
+                      <Bar dataKey="agendamentos" fill="#2563EB" radius={[3, 3, 0, 0]} name="agendamentos" maxBarSize={80}>
+                        <LabelList
+                          dataKey="pct"
+                          position="top"
+                          formatter={(v: any) => v > 0 ? `${v}%` : ""}
+                          style={{ fontSize: 10, fontWeight: 700, fill: "#10b981" }}
+                        />
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                ) : (
+                  /* ── VISTA DIÁRIA ── */
+                  (() => {
+                    const DailyTick = ({ x, y, index }: any) => {
+                      const entry = (dailyData as any[])[index];
+                      if (!entry?.date) return null;
+                      const d = new Date(entry.date + "T12:00:00");
+                      const dayNum = d.getDate();
+                      const isNewMonth = index > 0 && dayNum === 1;
+                      return (
+                        <g transform={`translate(${x},${y})`}>
+                          {isNewMonth && (
+                            <>
+                              <line x1={0} y1={-145} x2={0} y2={4} stroke="#cbd5e1" strokeWidth={1} strokeDasharray="3 2" />
+                              <text x={0} y={0} dy={22} textAnchor="middle" fill="#2563EB" fontSize={9} fontWeight={700}>{MONTH_SHORT[d.getMonth()]}</text>
+                            </>
+                          )}
+                          <text x={0} y={0} dy={12} textAnchor="middle" fill={isNewMonth ? "#2563EB" : "#9ca3af"} fontSize={9} fontWeight={isNewMonth ? 700 : 400}>
+                            {dayNum}
+                          </text>
+                        </g>
+                      );
+                    };
                     return (
-                      <div className={`rounded-lg p-4 ${isOk ? "bg-[#f0fdf4]" : "bg-[#fef2f2]"}`}>
-                        <p className="text-[11px] text-[#86868b] mb-1">No-show gerado</p>
-                        <p className={`text-[22px] font-bold ${isOk ? "text-[#16A34A]" : "text-[#DC2626]"}`}>{val}%</p>
-                        <p className={`text-[10px] mt-1 ${isOk ? "text-[#16A34A]" : "text-[#DC2626]"}`}>meta ≤ 35%</p>
-                      </div>
+                      <ResponsiveContainer width="100%" height={isMultiMonth ? 190 : 170}>
+                        <BarChart data={dailyData} barCategoryGap="10%" barGap={0} margin={{ top: 10, right: 10, left: -20, bottom: isMultiMonth ? 14 : 0 }}>
+                          <CartesianGrid vertical={false} stroke="#f0f0f5" strokeDasharray="3 3" />
+                          <XAxis dataKey="dia" tick={<DailyTick />} axisLine={false} tickLine={false} interval={0} />
+                          <YAxis tick={{ fontSize: 10, fill: "#9ca3af" }} axisLine={false} tickLine={false} dx={-6} />
+                          <RechartsTooltip {...TOOLTIP_STYLE} formatter={(v: any, name: any) => [`${Math.round(v)}`, name === "leads" ? "Entraram" : "Agendados"]} labelFormatter={tooltipLabelDaily} />
+                          <Legend iconType="circle" wrapperStyle={{ fontSize: 11, color: "#86868b", paddingTop: "4px" }} />
+                          <ReferenceLine y={4} stroke="#d97706" strokeWidth={1.5} />
+                          <Bar dataKey="leads" fill="#e5e7eb" radius={[2, 2, 0, 0]} name="leads" />
+                          <Bar dataKey="agendamentos" fill="#2563EB" radius={[2, 2, 0, 0]} name="agendamentos" />
+                        </BarChart>
+                      </ResponsiveContainer>
                     );
-                  })()}
+                  })()
+                )}
+              </div>
+            </div>
+          );
+        })()}
 
-                  {/* Comparecimento */}
-                  {(() => {
-                    const ag = displayed.reduce((s: any, x: any) => s + (x.agendamentos || 0), 0);
-                    const ns = displayed.reduce((s: any, x: any) => s + (x.noShowsNoPeriodo || 0), 0);
-                    const val = ag > 0 ? parseFloat((((ag - ns) / ag) * 100).toFixed(1)) : 0;
-                    const isOk = val >= 65;
-                    return (
-                      <div className={`rounded-lg p-4 ${isOk ? "bg-[#f0fdf4]" : "bg-[#fef2f2]"}`}>
-                        <p className="text-[11px] text-[#86868b] mb-1">Comparecimento</p>
-                        <p className={`text-[22px] font-bold ${isOk ? "text-[#16A34A]" : "text-[#DC2626]"}`}>{val}%</p>
-                        <p className={`text-[10px] mt-1 ${isOk ? "text-[#16A34A]" : "text-[#DC2626]"}`}>meta ≥ 65%</p>
+        {/* ── ANÁLISE DE CADÊNCIA vs NO-SHOW ──────────────────────────────── */}
+        <div className="mt-8 mb-8">
+          <div className="flex items-center justify-between mb-2">
+            <h2 className="text-[11px] font-semibold text-[#86868b] uppercase tracking-wider">Cadência vs No-Show</h2>
+            <span className="text-[10px] text-[#86868b]">dias entre chegada do lead e agendamento</span>
+          </div>
+          <div className="bg-white rounded-xl border border-[#e5e5ea] shadow-sm p-6">
+            {!cadenciaData ? (
+              <p className="text-[12px] text-[#86868b]">Carregando análise...</p>
+            ) : cadenciaData.totalLeads === 0 ? (
+              <p className="text-[12px] text-[#86868b]">Nenhum agendamento no período.</p>
+            ) : (
+              <>
+                {/* Cabeçalho compacto: resumo + novos vs reagendamentos */}
+                {cadenciaData.comparativo && (() => {
+                  const n = cadenciaData.comparativo.novos;
+                  const r = cadenciaData.comparativo.reagendados;
+                  const taxaColor = (t: number) => t <= 35 ? "#16a34a" : t <= 50 ? "#d97706" : "#dc2626";
+                  return (
+                    <div className="flex items-stretch mb-6 rounded-xl overflow-hidden" style={{ background: "#111827" }}>
+                      {/* Totais gerais */}
+                      <div className="flex-1 px-5 py-4">
+                        <p className="text-[10px] text-[#6b7280] font-semibold uppercase tracking-widest mb-3">Geral</p>
+                        <div className="flex items-end justify-between">
+                          <div>
+                            <span className="text-[28px] font-black text-white leading-none">{cadenciaData.totalLeads}</span>
+                            <span className="text-[11px] text-[#9ca3af] ml-2">agendamentos</span>
+                          </div>
+                          <span className="text-[13px] font-bold px-2.5 py-1 rounded-lg" style={{
+                            background: cadenciaData.taxaGeral <= 35 ? "#052e16" : cadenciaData.taxaGeral <= 50 ? "#1c1404" : "#1f0e0e",
+                            color: cadenciaData.taxaGeral <= 35 ? "#4ade80" : cadenciaData.taxaGeral <= 50 ? "#fbbf24" : "#f87171"
+                          }}>{cadenciaData.taxaGeral}% no-show</span>
+                        </div>
                       </div>
-                    );
-                  })()}
+                      {/* Divisor */}
+                      <div className="w-px bg-[#1f2937]" />
+                      {/* Novos */}
+                      <div className="flex-1 px-5 py-4">
+                        <p className="text-[10px] text-[#6b7280] font-semibold uppercase tracking-widest mb-3">
+                          Novos {(n.ia ?? 0) > 0 && <span className="text-[#818cf8] normal-case font-normal">· {n.ia} via IA</span>}
+                        </p>
+                        <div className="flex items-end justify-between">
+                          <div>
+                            <span className="text-[28px] font-black text-white leading-none">{n.total}</span>
+                            <span className="text-[11px] text-[#9ca3af] ml-2">{n.noShow} faltaram</span>
+                          </div>
+                          <span className="text-[13px] font-bold px-2.5 py-1 rounded-lg" style={{
+                            background: n.taxa <= 35 ? "#052e16" : n.taxa <= 50 ? "#1c1404" : "#1f0e0e",
+                            color: n.taxa <= 35 ? "#4ade80" : n.taxa <= 50 ? "#fbbf24" : "#f87171"
+                          }}>{n.taxa}%</span>
+                        </div>
+                      </div>
+                      {/* Divisor */}
+                      <div className="w-px bg-[#1f2937]" />
+                      {/* Reagendamentos */}
+                      <div className="flex-1 px-5 py-4">
+                        <p className="text-[10px] text-[#6b7280] font-semibold uppercase tracking-widest mb-3">Reagendamentos</p>
+                        <div className="flex items-end justify-between">
+                          <div>
+                            <span className="text-[28px] font-black text-white leading-none">{r.total > 0 ? r.total : "—"}</span>
+                            {r.total > 0 && <span className="text-[11px] text-[#9ca3af] ml-2">{r.noShow} faltaram</span>}
+                          </div>
+                          {r.total > 0 && (
+                            <span className="text-[13px] font-bold px-2.5 py-1 rounded-lg" style={{
+                              background: r.taxa <= 35 ? "#052e16" : r.taxa <= 50 ? "#1c1404" : "#1f0e0e",
+                              color: r.taxa <= 35 ? "#4ade80" : r.taxa <= 50 ? "#fbbf24" : "#f87171"
+                            }}>{r.taxa}%</span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })()}
 
-                  {/* Taxa de retorno */}
-                  <div className="rounded-lg p-4 bg-[#f8f9fa]">
-                    <p className="text-[11px] text-[#86868b] mb-1">Taxa de retorno</p>
-                    <p className="text-[22px] font-bold text-[#1d1d1f]">
-                      {displayed.length > 0 ? (displayed.reduce((s: any, r: any) => s + (r.taxaReagendamento || 0), 0) / displayed.length).toFixed(1) : "0"}%
-                    </p>
-                    <p className="text-[10px] text-[#9ca3af] mt-1">reagendamentos</p>
+                {/* Distribuição por número de reagendamentos */}
+                {cadenciaData.reagendadoDist && cadenciaData.reagendadoDist.length > 0 && (
+                  <div className="mb-5 pb-5 border-b border-[#f0f0f5]">
+                    <p className="text-[10px] font-semibold text-[#86868b] uppercase tracking-wide mb-3">Vezes que o lead reagendou</p>
+                    <div className="flex gap-3">
+                      {(cadenciaData.reagendadoDist as any[]).map((row: any) => {
+                        const nsColor = row.taxa > 60 ? "#dc2626" : row.taxa > 40 ? "#d97706" : "#16a34a";
+                        const nsBg   = row.taxa > 60 ? "#fef2f2" : row.taxa > 40 ? "#fffbeb" : "#f0fdf4";
+                        return (
+                          <div key={row.vezes} className="flex-1 rounded-lg border border-[#e5e5ea] bg-[#fafafa] px-4 py-3">
+                            <p className="text-[13px] font-black text-[#1d1d1f] mb-1">{row.label}</p>
+                            <p className="text-[11px] text-[#86868b]">{row.total} leads · {row.noShow} faltaram</p>
+                            <p className="text-[15px] font-black mt-2" style={{ color: nsColor }}>{row.taxa}%</p>
+                          </div>
+                        );
+                      })}
+                    </div>
                   </div>
+                )}
 
-                  {/* Score SDR */}
-                  <div className="rounded-lg p-4 bg-[#fffbeb]">
-                    <p className="text-[11px] text-[#86868b] mb-1">Score SDR</p>
-                    <p className="text-[22px] font-bold text-[#d97706]">
-                      {displayed.length > 0 ? Math.round(displayed.reduce((s: any, r: any) => s + (r.sdrScoreMedia || 0), 0) / displayed.length) : 0}
-                      <span className="text-[13px] text-[#9ca3af] font-normal">/100</span>
-                    </p>
-                    <p className="text-[10px] text-[#9ca3af] mt-1">avaliação geral</p>
-                  </div>
-                </div>
-             </div>
-
-             {/* Ranking de SDRs */}
-             <div className="bg-white rounded-xl border border-[#e5e5ea] shadow-sm overflow-hidden flex-1 min-h-[300px]">
-                <div className="p-5 border-b border-[#f0f0f5]">
-                   <h3 className="text-[14px] font-bold text-[#1d1d1f]">Ranking de SDRs</h3>
-                </div>
-                
+                {/* Tabela por dia de cadência */}
                 <div className="overflow-x-auto">
-                   <table className="w-full text-[10px] text-left">
-                      <thead>
-                         <tr className="bg-white text-[#9ca3af] tracking-wider uppercase">
-                            <th className="py-4 pl-6 font-semibold w-10">#</th>
-                            <th className="py-4 font-semibold">SDR</th>
-                            <th className="py-4 text-right pr-4 font-semibold">LEADS</th>
-                            <th className="py-4 text-right pr-4 font-semibold">NO FUNIL</th>
-                            <th className="py-4 text-right pr-4 font-semibold">CONVERSÃO</th>
-                            <th className="py-4 text-right pr-4 font-semibold">AGEND.</th>
-                            <th className="py-4 text-center pr-6 font-semibold">SCORE</th>
-                         </tr>
-                      </thead>
-                      <tbody>
-                         {displayed.length === 0 ? (
-                           <tr>
-                              <td colSpan={7} className="py-16 text-center text-[12px] text-[#86868b]">Nenhum dado no período.</td>
-                           </tr>
-                         ) : (
-                           displayed.filter((row: any) => row.leadsGerados > 0 || row.agendamentos > 0).map((row: any, i: number) => (
-                             <tr key={row.agentName} className="border-t border-[#f0f0f5]">
-                               <td className="py-3 pl-6">
-                                  <div className={`w-5 h-5 rounded-full flex items-center justify-center font-bold pb-px ${
-                                    i === 0 ? 'bg-[#fffbeb] text-[#d97706]' : 'bg-[#f3f4f6] text-[#9ca3af]'
-                                  }`}>
-                                     {i === 0 ? <span className="w-1.5 h-1.5 rounded-full bg-[#d97706]"></span> : i+1}
-                                  </div>
-                               </td>
-                               <td className="py-3 font-semibold text-[#1d1d1f]">{row.agentName}</td>
-                               <td className="py-3 text-right pr-4 text-[#374151]">{row.leadsGerados}</td>
-                               <td className="py-3 text-right pr-4 text-[#86868b]">{row.leadsNoFunil}</td>
-                               {(() => { const val = row.leadsGerados > 0 ? (row.agendamentos / row.leadsGerados) * 100 : 0; return <td className={`py-3 text-right pr-4 font-semibold ${val >= 35 ? "text-[#16A34A]" : "text-[#DC2626]"}`}>{val.toFixed(1)}%</td>; })()}
-                               <td className="py-3 text-right pr-4 font-semibold text-[#2563EB]">{row.agendamentos}</td>
-                               <td className="py-3 text-center pr-6">
-                                 {row.sdrScoreMedia > 0 ? (
-                                    <div className="inline-flex items-center justify-center bg-[#f0fdf4] text-[#16a34a] font-bold px-2 py-0.5 rounded text-[11px]">
-                                      {row.sdrScoreMedia} ★
-                                    </div>
-                                 ) : '—'}
-                               </td>
-                             </tr>
-                           ))
-                         )}
-                      </tbody>
-                   </table>
+                  <table className="w-full text-[12px]">
+                    <thead>
+                      <tr className="text-[10px] text-[#9ca3af] uppercase tracking-wider border-b border-[#f0f0f5]">
+                        <th className="pb-2 text-left font-semibold">Dia</th>
+                        <th className="pb-2 text-right font-semibold">Agendados</th>
+                        <th className="pb-2 font-semibold w-[16%]"></th>
+                        <th className="pb-2 text-right font-semibold">Faltaram</th>
+                        <th className="pb-2 text-right font-semibold">No-show</th>
+                        <th className="pb-2 text-right font-semibold">Vendas</th>
+                        <th className="pb-2 text-right font-semibold">Conv.</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(() => {
+                        const maxTotal = Math.max(...(cadenciaData.rows as any[]).map((r: any) => r.total));
+                        return (cadenciaData.rows as any[]).map((row: any) => {
+                        const nsColor = row.taxaNoShow > 50 ? "#dc2626" : row.taxaNoShow > 35 ? "#d97706" : "#16a34a";
+                        const nsBg   = row.taxaNoShow > 50 ? "#fef2f2" : row.taxaNoShow > 35 ? "#fffbeb" : "#f0fdf4";
+                        const isHighVol = row.total >= 10;
+                        const barPct = maxTotal > 0 ? (row.total / maxTotal) * 100 : 0;
+                        return (
+                          <tr key={row.diaCad} className="border-b border-[#f0f0f5] last:border-0 hover:bg-[#fafafa]">
+                            <td className="py-2.5 font-medium text-[#1d1d1f]">
+                              {row.diaLabel}
+                              {!isHighVol && <span className="ml-1.5 text-[9px] text-[#c0c0c0]">*</span>}
+                            </td>
+                            <td className="py-2.5 text-right text-[#374151] pr-3">{row.total}</td>
+                            <td className="py-2.5">
+                              <div className="h-1.5 bg-[#f0f0f5] rounded-full overflow-hidden">
+                                <div className="h-full rounded-full bg-[#1d1d1f]" style={{ width: `${barPct}%` }} />
+                              </div>
+                            </td>
+                            <td className="py-2.5 text-right text-[#374151]">{row.noShow}</td>
+                            <td className="py-2.5 text-right">
+                              <span className="font-bold text-[12px] px-2 py-0.5 rounded" style={{ color: nsColor, background: nsBg }}>{row.taxaNoShow}%</span>
+                            </td>
+                            <td className="py-2.5 text-right text-[#374151]">{row.ganhos ?? 0}</td>
+                            <td className="py-2.5 text-right font-semibold" style={{ color: (row.taxaConversao ?? 0) > 0 ? "#16a34a" : "#9ca3af" }}>{row.taxaConversao ?? 0}%</td>
+                          </tr>
+                        );
+                      })})()}
+                    </tbody>
+                  </table>
                 </div>
-             </div>
 
+                {/* Insight */}
+                {(() => {
+                  const rows: any[] = cadenciaData.rows ?? [];
+                  const highVol = rows.filter((r: any) => r.total >= 10);
+                  if (highVol.length < 2) return null;
+                  const bestNs = highVol.reduce((a: any, b: any) => a.taxaNoShow < b.taxaNoShow ? a : b);
+                  const bestConv = highVol.reduce((a: any, b: any) => (a.taxaConversao ?? 0) > (b.taxaConversao ?? 0) ? a : b);
+                  return (
+                    <div className="mt-4 pt-4 border-t border-[#f0f0f5] space-y-2">
+                      <div className="bg-[#fffbeb] rounded-lg p-3 text-[11px] text-[#92400e]">
+                        <strong>No-show:</strong> Menor taxa no <strong>{bestNs.diaLabel}</strong> ({bestNs.taxaNoShow}%).
+                        {bestNs.diaCad <= 3 ? " Leads contactados mais cedo faltam menos." : ` Vale continuar a cadência — ${bestNs.diaLabel} tem menos no-show.`}
+                      </div>
+                      {(bestConv.ganhos ?? 0) > 0 && (
+                        <div className="bg-[#f0fdf4] rounded-lg p-3 text-[11px] text-[#14532d]">
+                          <strong>Conversão:</strong> Maior taxa de venda no <strong>{bestConv.diaLabel}</strong> ({bestConv.taxaConversao}% — {bestConv.ganhos} {bestConv.ganhos === 1 ? "venda" : "vendas"} de {bestConv.total} agendados).
+                          {bestConv.diaCad !== bestNs.diaCad && ` Atenção: o dia com menor no-show (${bestNs.diaLabel}) não é o de maior conversão (${bestConv.diaLabel}).`}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
+              </>
+            )}
           </div>
         </div>
 
+        {/* ── RANKING DE SDRs ─────────────────────────────────────────────── */}
+        <div className="bg-white rounded-xl border border-[#e5e5ea] shadow-sm overflow-hidden mt-8">
+           <div className="p-5 border-b border-[#f0f0f5]">
+              <h3 className="text-[14px] font-bold text-[#1d1d1f]">Ranking de SDRs</h3>
+           </div>
+           <div className="overflow-x-auto">
+              <table className="w-full text-[10px] text-left">
+                 <thead>
+                    <tr className="bg-white text-[#9ca3af] tracking-wider uppercase">
+                       <th className="py-4 pl-6 font-semibold w-10">#</th>
+                       <th className="py-4 font-semibold">SDR</th>
+                       <th className="py-4 text-right pr-4 font-semibold">LEADS</th>
+                       <th className="py-4 text-right pr-4 font-semibold">NO FUNIL</th>
+                       <th className="py-4 text-right pr-4 font-semibold">CONVERSÃO</th>
+                       <th className="py-4 text-right pr-4 font-semibold">AGEND.</th>
+                       <th className="py-4 text-right pr-4 font-semibold">NO-SHOW</th>
+                       <th className="py-4 text-center pr-6 font-semibold">SCORE</th>
+                    </tr>
+                 </thead>
+                 <tbody>
+                    {displayed.length === 0 ? (
+                      <tr>
+                         <td colSpan={8} className="py-16 text-center text-[12px] text-[#86868b]">Nenhum dado no período.</td>
+                      </tr>
+                    ) : (
+                      displayed.filter((row: any) => row.leadsGerados > 0 || row.agendamentos > 0).map((row: any, i: number) => {
+                        const conv = row.leadsGerados > 0 ? (row.agendamentos / row.leadsGerados) * 100 : 0;
+                        const ns = row.agendamentos > 0 ? ((row.noShowsNoPeriodo ?? 0) / row.agendamentos) * 100 : 0;
+                        return (
+                          <tr key={row.agentName} className="border-t border-[#f0f0f5]">
+                            <td className="py-3 pl-6">
+                               <div className={`w-5 h-5 rounded-full flex items-center justify-center font-bold pb-px ${
+                                 i === 0 ? 'bg-[#fffbeb] text-[#d97706]' : 'bg-[#f3f4f6] text-[#9ca3af]'
+                               }`}>
+                                  {i === 0 ? <span className="w-1.5 h-1.5 rounded-full bg-[#d97706]"></span> : i+1}
+                               </div>
+                            </td>
+                            <td className="py-3 font-semibold text-[#1d1d1f]">{row.agentName}</td>
+                            <td className="py-3 text-right pr-4 text-[#374151]">{row.leadsGerados}</td>
+                            <td className="py-3 text-right pr-4 text-[#86868b]">{row.leadsNoFunil}</td>
+                            <td className={`py-3 text-right pr-4 font-semibold ${conv >= 35 ? "text-[#16A34A]" : "text-[#DC2626]"}`}>{conv.toFixed(1)}%</td>
+                            <td className="py-3 text-right pr-4 font-semibold text-[#2563EB]">{row.agendamentos}</td>
+                            <td className={`py-3 text-right pr-4 font-semibold ${ns <= 35 ? "text-[#16A34A]" : "text-[#DC2626]"}`}>{ns.toFixed(1)}%</td>
+                            <td className="py-3 text-center pr-6">
+                              {row.sdrScoreMedia > 0 ? (
+                                 <div className="inline-flex items-center justify-center bg-[#f0fdf4] text-[#16a34a] font-bold px-2 py-0.5 rounded text-[11px]">
+                                   {row.sdrScoreMedia} ★
+                                 </div>
+                              ) : '—'}
+                            </td>
+                          </tr>
+                        );
+                      })
+                    )}
+                 </tbody>
+              </table>
+           </div>
+        </div>
 
       </main>
     </div>

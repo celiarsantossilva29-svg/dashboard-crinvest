@@ -4,8 +4,10 @@
 // O progresso pode ser acompanhado via GET /api/sync/status (syncProgress).
 
 export const dynamic = "force-dynamic";
+export const maxDuration = 300; // 5 min — necessário para syncs longos no Vercel
 
 import { NextRequest, NextResponse } from "next/server";
+import { waitUntil } from "@vercel/functions";
 import { syncKommoData } from "@/services/kommo";
 import { prisma } from "@/lib/prisma";
 import { syncProgress } from "@/lib/sync-progress";
@@ -37,10 +39,12 @@ export async function GET(req: NextRequest) {
     since = new Date(Math.min(lastSyncMs, midnightBRT.getTime()));
   }
 
-  // Disparar em background — não aguarda conclusão
-  syncKommoData({ since }).catch((err) => {
-    console.error("[sync/kommo] background error:", err?.message);
-  });
+  // Disparar em background — waitUntil garante que o Vercel mantém a função viva até terminar
+  waitUntil(
+    syncKommoData({ since }).catch((err) => {
+      console.error("[sync/kommo] background error:", err?.message);
+    })
+  );
 
   return NextResponse.json({
     data: { started: true, mode },

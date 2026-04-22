@@ -118,6 +118,7 @@ interface CustomFieldValues {
   utmSource?: string;
   utmMedium?: string;
   utmCampaign?: string;
+  reuniaoPreVenda?: Date | null;
 }
 
 /**
@@ -144,6 +145,19 @@ function parseCustomFields(fields: any[]): CustomFieldValues {
   const utmSourceRaw = get("utm_source");
   const utmMediumRaw = get("utm_medium");
   const utmCampaignRaw = get("utm_campaign");
+  const reuniaoRaw = get("Reunião PRÉ-VENDA") ?? get("Reuniao PRE-VENDA") ?? get("reuniao_pre_venda");
+
+  // O campo de data no Kommo pode vir como timestamp Unix (number) ou string ISO
+  let reuniaoPreVenda: Date | null = null;
+  if (reuniaoRaw != null) {
+    const ts = Number(reuniaoRaw);
+    if (!isNaN(ts) && ts > 0) {
+      reuniaoPreVenda = new Date(ts * 1000); // Unix timestamp em segundos
+    } else if (typeof reuniaoRaw === "string" && reuniaoRaw.length > 0) {
+      const d = new Date(reuniaoRaw);
+      if (!isNaN(d.getTime())) reuniaoPreVenda = d;
+    }
+  }
 
   return {
     sdrScore: sdrScoreRaw != null ? Number(sdrScoreRaw) : null,
@@ -154,6 +168,7 @@ function parseCustomFields(fields: any[]): CustomFieldValues {
     utmSource: typeof utmSourceRaw === "string" ? utmSourceRaw : undefined,
     utmMedium: typeof utmMediumRaw === "string" ? utmMediumRaw : undefined,
     utmCampaign: typeof utmCampaignRaw === "string" ? utmCampaignRaw : undefined,
+    reuniaoPreVenda,
   };
 }
 
@@ -480,11 +495,21 @@ export async function syncKommoData(opts: SyncOptions = {}): Promise<{ synced: n
 
     if (items.length === 0) break;
 
-    updateSync(`Pág. ${page}: ${items.length} leads recebidos, buscando contatos...`, 0, 0, page);
+    // Ignora leads do funil "CAMPANHA | NUTRIÇÃO" — base antiga, irrelevante para o dashboard
+    const SKIP_PIPELINE = "CAMPANHA | NUTRIÇÃO";
+    const filteredItems = items.filter((item: any) => {
+      const pName = pipelines[item.pipeline_id]?.name ?? "";
+      return !pName.toUpperCase().includes("CAMPANHA") && !pName.toUpperCase().includes("NUTRIÇÃO");
+    });
+    const skipped = items.length - filteredItems.length;
+    if (skipped > 0) console.log(`Pulando ${skipped} leads do funil "${SKIP_PIPELINE}"`);
+    const activeItems = filteredItems;
+
+    updateSync(`Pág. ${page}: ${activeItems.length} leads recebidos, buscando contatos...`, 0, 0, page);
 
     // -- BUSCA TELEFONES DOS CONTATOS VINCULADOS --
     const contactIds = new Set<number>();
-    for (const item of items) {
+    for (const item of activeItems) {
       for (const c of item._embedded?.contacts ?? []) {
         if (c.id) contactIds.add(c.id);
       }
@@ -512,7 +537,7 @@ export async function syncKommoData(opts: SyncOptions = {}): Promise<{ synced: n
               for (const cf of contact.custom_fields_values ?? []) {
                 const fname = (cf.field_name || cf.name || "").toLowerCase();
                 const fcode = (cf.field_code || "").toUpperCase();
-                
+
                 if (fname.includes("telefone") || fname.includes("tel") || fcode === "PHONE") {
                   for (const val of cf.values ?? []) {
                     if (val.value) phones.push(val.value.replace(/\D/g, ""));
@@ -529,20 +554,17 @@ export async function syncKommoData(opts: SyncOptions = {}): Promise<{ synced: n
     }
 
     // ── Captura syncedAt ANTES do upsert para comparar com kommo updated_at ──
-    // Se feito depois, syncedAt = agora e todos os eventos seriam pulados.
-    const pageIds = items.map((item: any) => String(item.id));
+    const pageIds = activeItems.map((item: any) => String(item.id));
     const existingSynced = await prisma.lead.findMany({
       where: { id: { in: pageIds } },
       select: { id: true, syncedAt: true },
     });
     const syncedAtMap = new Map(existingSynced.map(l => [l.id, l.syncedAt]));
 
-    updateSync(`Pág. ${page}: salvando ${items.length} leads no banco...`, 0, 0, page);
+    updateSync(`Pág. ${page}: salvando ${activeItems.length} leads no banco...`, 0, 0, page);
 
     // Prepara os dados de todos os leads da página antes de abrir a transação.
-    // Uma $transaction por página = 1 conexão DB por página (em vez de N conexões),
-    // o que evita esgotamento do pool do Supabase pgbouncer durante syncs longos.
-    const upsertOps = items.map((item: any) => {
+    const upsertOps = activeItems.map((item: any) => {
       const pipelineId = item.pipeline_id ?? null;
       const pipeline = pipelineId != null ? pipelines[pipelineId] : null;
       const stageName = pipeline?.statuses[item.status_id] ?? "";
@@ -591,6 +613,8 @@ export async function syncKommoData(opts: SyncOptions = {}): Promise<{ synced: n
           isReagendado: custom.isReagendado ?? false,
           contactAttempts: custom.contactAttempts ?? 0,
           leadPhones,
+          // Campo "Reunião PRÉ-VENDA" tem prioridade sobre a data inferida por etapa
+          ...(custom.reuniaoPreVenda != null ? { meetingAt: custom.reuniaoPreVenda } : {}),
           syncedAt: new Date(),
         },
         create: {
@@ -623,37 +647,61 @@ export async function syncKommoData(opts: SyncOptions = {}): Promise<{ synced: n
 
     // Executa todos os upserts da página em uma única transação
     await prisma.$transaction(upsertOps);
-    total += items.length;
+    total += activeItems.length;
 
     // ── Enriquecer leads com timestamps de etapa (events API) ──
-    const leadsToEnrich = items.filter((item: any) => {
+    const sixMonthsAgo = new Date(Date.now() - 180 * 24 * 3600 * 1000);
+    const leadsToEnrich = activeItems.filter((item: any) => {
+      // Pula leads fechados (won/lost) há mais de 6 meses — nunca mudam
+      const closedAt = item.closed_at ? new Date(item.closed_at * 1000) : null;
+      const isClosed = item.status_id === 142 || item.status_id === 143; // won/lost IDs padrão Kommo
+      if (isClosed && closedAt && closedAt < sixMonthsAgo) return false;
+
       const lastSynced = syncedAtMap.get(String(item.id));
       const kommoUpdated = new Date(item.updated_at * 1000);
       return !(lastSynced && kommoUpdated <= lastSynced);
     });
 
-    for (let ei = 0; ei < leadsToEnrich.length; ei++) {
-      const item = leadsToEnrich[ei];
+    // Busca eventos em batches de 20 leads por chamada (Kommo aceita múltiplos
+    // filter[entity_id][]). Reduz ~7700 chamadas individuais para ~385 batches.
+    const BATCH_SIZE = 20;
+    for (let bi = 0; bi < leadsToEnrich.length; bi += BATCH_SIZE) {
+      const batch = leadsToEnrich.slice(bi, bi + BATCH_SIZE);
+      const batchNum = Math.floor(bi / BATCH_SIZE) + 1;
+      const totalBatches = Math.ceil(leadsToEnrich.length / BATCH_SIZE);
       updateSync(
-        `Pág. ${page}: histórico ${ei + 1}/${leadsToEnrich.length} (${total} leads)`,
-        ei + 1,
+        `Pág. ${page}: histórico ${batchNum}/${totalBatches} (${total} leads)`,
+        bi + batch.length,
         leadsToEnrich.length,
         page
       );
 
       try {
+        const idParams = batch.map((item: any) => `filter[entity_id][]=${item.id}`).join("&");
         const res = await fetch(
-          `${BASE()}/events?filter[entity]=lead&filter[entity_id][]=${item.id}&limit=250`,
+          `${BASE()}/events?filter[entity]=lead&${idParams}&limit=250`,
           { headers: { Authorization: `Bearer ${accessToken}` } }
         );
         if (res.ok && res.status !== 204) {
           const json = await res.json();
-          await processLeadEvents(String(item.id), json._embedded?.events ?? [], pipelines, users);
+          const events: any[] = json._embedded?.events ?? [];
+
+          // Agrupa eventos por lead e processa cada um
+          const byLead = new Map<string, any[]>();
+          for (const ev of events) {
+            const lid = String(ev.entity_id);
+            if (!byLead.has(lid)) byLead.set(lid, []);
+            byLead.get(lid)!.push(ev);
+          }
+          for (const item of batch) {
+            const leadEvents = byLead.get(String(item.id)) ?? [];
+            await processLeadEvents(String(item.id), leadEvents, pipelines, users);
+          }
         }
       } catch (e: any) {
-        console.error(`processLeadEvents failed for ${item.id}:`, e.message);
+        console.error(`processLeadEvents batch failed (batch ${batchNum}):`, e.message);
       }
-      // 250ms entre chamadas → ~4 req/s, margem confortável abaixo do limite de 7 req/s
+      // 250ms entre batches → bem abaixo do limite de 7 req/s do Kommo
       await new Promise(r => setTimeout(r, 250));
     }
 
@@ -692,6 +740,7 @@ async function processLeadEvents(
     scheduledBy?: string | null;
     meetingAt?: Date;
     reagendadoAt?: Date;
+    reagendadoCount?: number;
   } = {};
 
   const sorted = [...events].sort((a, b) => a.created_at - b.created_at);
@@ -725,6 +774,7 @@ async function processLeadEvents(
           : createdBy != null ? (users[createdBy]?.name ?? `user-${createdBy}`) : null;
       } else {
         timestamps.reagendadoAt = ts;
+        timestamps.reagendadoCount = (timestamps.reagendadoCount ?? 0) + 1;
       }
     }
 

@@ -50,6 +50,7 @@ model Lead {
   contactAttempts  Int       @default(0)
   isReagendado     Boolean   @default(false)
   reagendadoAt     DateTime?
+  reagendadoCount  Int       @default(0)
   nextTaskAt       DateTime?
   goToCalls        Int       @default(0)
   firstCallAt      DateTime?
