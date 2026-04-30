@@ -12,5 +12,6 @@ coverage/
 .vercel
 /src/generated/prisma
 *.json
+!cr-invest/comissoes-base.json
 backend/src/*.json
 **/database_3c_cache.json

@@ -28,6 +28,8 @@ function firstCommissionDate(inicio: Date): Date {
   return addMonths(inicio, inicio.getUTCDate() <= 22 ? 1 : 2);
 }
 
+interface CommBase { commBase: number; nMeses: number; }
+
 export interface ContratoDetalhe {
   nome: string;
   proposta: string;
@@ -35,7 +37,7 @@ export interface ContratoDetalhe {
   produto: string;
   premio: number;
   nMeses: number;
-  parcelaNum: number; // qual parcela cai nesse mês (1-based)
+  parcelaNum: number;
   commMensal: number;
 }
 
@@ -44,6 +46,13 @@ export async function GET() {
     const filePath = path.join(process.cwd(), "contratos-porto.txt");
     if (!fs.existsSync(filePath)) {
       return NextResponse.json({ totais: {}, detalhes: {} });
+    }
+
+    // Load real commission amounts derived from actual Porto monthly reports
+    let commBase: Record<string, CommBase> = {};
+    const baseJsonPath = path.join(process.cwd(), "comissoes-base.json");
+    if (fs.existsSync(baseJsonPath)) {
+      commBase = JSON.parse(fs.readFileSync(baseJsonPath, "utf8"));
     }
 
     const txt = fs.readFileSync(filePath, "utf8");
@@ -61,7 +70,7 @@ export async function GET() {
     const now = new Date();
     const windowStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 12, 1));
     const startKey = monthKey(windowStart);
-    const endKey   = `${now.getUTCFullYear()}-12`;
+    const endKey   = `${now.getUTCFullYear() + 1}-12`;
 
     const totais:   Record<string, number> = {};
     const detalhes: Record<string, ContratoDetalhe[]> = {};
@@ -78,11 +87,22 @@ export async function GET() {
       const parcelasRaw = parseBRNum(cols[iParcelas]);
       const premio      = parseBRNum(cols[iPremio]);
 
-      if (!inicioD || !nome || !premio) continue;
+      if (!inicioD || !nome) continue;
 
-      const nMeses     = (parcelasRaw >= 1 && parcelasRaw <= 12) ? Math.round(parcelasRaw) : 12;
-      const commMensal = (premio * 0.04) / nMeses * NET_FACTOR;
-      const firstComm  = firstCommissionDate(inicioD);
+      let nMeses: number;
+      let commMensal: number;
+
+      const realData = commBase[apolice];
+      if (realData) {
+        nMeses    = realData.nMeses;
+        commMensal = realData.commBase;
+      } else {
+        if (!premio) continue;
+        nMeses    = (parcelasRaw >= 1 && parcelasRaw <= 12) ? Math.round(parcelasRaw) : 12;
+        commMensal = (premio * 0.04) / nMeses * NET_FACTOR;
+      }
+
+      const firstComm = firstCommissionDate(inicioD);
 
       for (let j = 0; j < nMeses; j++) {
         const dt  = addMonths(firstComm, j);
@@ -95,7 +115,6 @@ export async function GET() {
       }
     }
 
-    // Ordena cada mês por nome
     for (const key of Object.keys(detalhes)) {
       detalhes[key].sort((a, b) => a.nome.localeCompare(b.nome));
     }
