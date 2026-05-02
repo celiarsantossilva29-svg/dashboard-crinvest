@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import fs from "fs";
 import path from "path";
+import { prisma } from "@/lib/prisma";
 
 const NET_FACTOR = 1 - 0.084 - 0.069; // 0.847
 
@@ -48,11 +49,23 @@ export async function GET() {
       return NextResponse.json({ totais: {}, detalhes: {} });
     }
 
-    // Load real commission amounts derived from actual Porto monthly reports
+    // Load real commission amounts — DB first (updatable via UI), fallback to file
     let commBase: Record<string, CommBase> = {};
-    const baseJsonPath = path.join(process.cwd(), "comissoes-base.json");
-    if (fs.existsSync(baseJsonPath)) {
-      commBase = JSON.parse(fs.readFileSync(baseJsonPath, "utf8"));
+    try {
+      const dbRec = await prisma.appSetting.findUnique({ where: { key: "porto:comissoes-base" } });
+      if (dbRec) {
+        commBase = JSON.parse(dbRec.value);
+      } else {
+        const baseJsonPath = path.join(process.cwd(), "comissoes-base.json");
+        if (fs.existsSync(baseJsonPath)) {
+          commBase = JSON.parse(fs.readFileSync(baseJsonPath, "utf8"));
+        }
+      }
+    } catch {
+      const baseJsonPath = path.join(process.cwd(), "comissoes-base.json");
+      if (fs.existsSync(baseJsonPath)) {
+        commBase = JSON.parse(fs.readFileSync(baseJsonPath, "utf8"));
+      }
     }
 
     const txt = fs.readFileSync(filePath, "utf8");

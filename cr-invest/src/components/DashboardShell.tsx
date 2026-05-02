@@ -51,6 +51,59 @@ const NAV_ITEMS = [
     ),
     href: "/dashboard",
   },
+  { type: "divider" as const, label: "FINANCEIRO" },
+  {
+    label: "Dashboard Financeiro",
+    permissionKey: "FINANCEIRO",
+    icon: (
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+        <line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>
+      </svg>
+    ),
+    href: "/dashboard/financeiro",
+  },
+  {
+    label: "Comissões",
+    permissionKey: "FINANCEIRO",
+    icon: (
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+        <rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8m-4-4v4"/>
+      </svg>
+    ),
+    href: "/dashboard/comissoes",
+  },
+  {
+    label: "Confirmar Recebimento",
+    permissionKey: "FINANCEIRO",
+    icon: (
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/>
+      </svg>
+    ),
+    href: "/dashboard/confirmar-recebimento",
+  },
+  {
+    label: "Gastos",
+    permissionKey: "FINANCEIRO",
+    icon: (
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/>
+      </svg>
+    ),
+    href: "/dashboard/gastos",
+  },
+  {
+    label: "Inadimplência",
+    permissionKey: "FINANCEIRO",
+    icon: (
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
+      </svg>
+    ),
+    href: "/dashboard/inadimplencia",
+  },
+
+  { type: "divider" as const, label: "COMERCIAL" },
   {
     label: "Performance SDR",
     permissionKey: "PERF_SDR",
@@ -72,7 +125,7 @@ const NAV_ITEMS = [
     href: "/dashboard/performance-closer",
   },
   {
-    label: "Gestão de Vendas",
+    label: "Vendas",
     permissionKey: "GESTAO_VENDAS",
     icon: (
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
@@ -81,7 +134,7 @@ const NAV_ITEMS = [
         <line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/>
       </svg>
     ),
-    href: "/dashboard/gestao-vendas",
+    href: "/dashboard/vendas",
   },
   {
     label: "Tentativas Contato",
@@ -93,16 +146,6 @@ const NAV_ITEMS = [
       </svg>
     ),
     href: "/dashboard/tentativas",
-  },
-  {
-    label: "Validação Venda",
-    permissionKey: "VALIDACAO_VENDA",
-    icon: (
-      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><path d="M9 14l2 2 4-4"/>
-      </svg>
-    ),
-    href: "/dashboard/validacao-vendas",
   },
   {
     label: "Configurações",
@@ -125,6 +168,8 @@ export default function DashboardShell({ children }: { children: React.ReactNode
   const syncStatus = useSyncStatus();
 
   const filteredNavItems = NAV_ITEMS.filter(item => {
+    if ((item as any).type === "divider") return true;
+
     if ((session?.user as any)?.role === "admin") return true;
 
     const permsRaw = (session?.user as any)?.permissions;
@@ -132,17 +177,16 @@ export default function DashboardShell({ children }: { children: React.ReactNode
 
     try {
       const perms = typeof permsRaw === "string" ? JSON.parse(permsRaw) : permsRaw;
-      
-      // Check specific permission key
-      const config = perms[item.permissionKey];
+      const permKey = (item as any).permissionKey as string;
+
+      const config = perms[permKey];
       if (config?.enabled === true) return true;
-      
-      // Backward compatibility: old "DASHBOARD" key grants access to all 3 dashboard pages
+
       const legacyDashboard = perms["DASHBOARD"];
-      if (legacyDashboard?.enabled === true && ["VISAO_EXECUTIVA", "PERF_SDR", "PERF_CLOSER"].includes(item.permissionKey)) {
+      if (legacyDashboard?.enabled === true && ["VISAO_EXECUTIVA", "PERF_SDR", "PERF_CLOSER"].includes(permKey)) {
         return true;
       }
-      
+
       return false;
     } catch(e) {
       return false;
@@ -205,15 +249,26 @@ export default function DashboardShell({ children }: { children: React.ReactNode
         </div>
 
         <nav className="flex-1 overflow-y-auto px-3 py-5 space-y-1">
-          {filteredNavItems.map((item) => {
+          {filteredNavItems.map((item, idx) => {
+            if ((item as any).type === "divider") {
+              if (collapsed) return null;
+              return (
+                <div key={`div-${idx}`} className="pt-4 pb-1 px-1">
+                  <p style={{ fontSize: 9, letterSpacing: "0.1em", color: "#4a4a4a", fontWeight: 600, textTransform: "uppercase" }}>
+                    {item.label}
+                  </p>
+                </div>
+              );
+            }
+            const href = (item as any).href as string;
             const isActive =
-              item.href === "/dashboard"
+              href === "/dashboard"
                 ? pathname === "/dashboard"
-                : pathname.startsWith(item.href);
+                : pathname.startsWith(href);
             return (
               <Link
-                key={item.href}
-                href={item.href}
+                key={href}
+                href={href}
                 title={collapsed ? item.label : undefined}
                 className="flex items-center gap-3 rounded-2xl transition-all duration-200 relative overflow-hidden focus:outline-none"
                 style={{
@@ -240,7 +295,7 @@ export default function DashboardShell({ children }: { children: React.ReactNode
                     width: 20,
                   }}
                 >
-                  {item.icon}
+                  {(item as any).icon}
                 </span>
                 {!collapsed && (
                   <span className="truncate">{item.label}</span>
