@@ -3,7 +3,7 @@
 import { useState, useEffect, useMemo, useCallback } from "react";
 import {
   Search, Plus, X, Pencil, CheckCircle, Check, Ban,
-  ChevronRight, ChevronDown, AlertTriangle,
+  ChevronRight, ChevronDown, AlertTriangle, Loader2, Upload,
 } from "lucide-react";
 import { useSession } from "next-auth/react";
 import { ComposedChart, Bar, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend } from "recharts";
@@ -223,6 +223,15 @@ export default function VendasPage() {
   const [alertsCollapsed, setAlertsCollapsed] = useState(false);
   const [pendentesExpanded, setPendentesExpanded] = useState(false);
   const [pendentesSearch, setPendentesSearch] = useState("");
+
+  // ── Porto confirm ───────────────────────────────────────────────────────────
+  const [portoOpen, setPortoOpen] = useState(false);
+  const [portoLinhas, setPortoLinhas] = useState("");
+  const [portoPreview, setPortoPreview] = useState<{ apolice: string; valor: number; nome: string; nova: boolean }[] | null>(null);
+  const [portoPreviewLoading, setPortoPreviewLoading] = useState(false);
+  const [portoSaveLoading, setPortoSaveLoading] = useState(false);
+  const [portoResult, setPortoResult] = useState<{ processadas: number; novas: number } | null>(null);
+  const [portoError, setPortoError] = useState("");
 
   // ── Modal ───────────────────────────────────────────────────────────────────
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -927,6 +936,136 @@ export default function VendasPage() {
                   </div>
                 ))}
               </div>
+            </div>
+          )}
+        </div>
+
+        {/* ── Porto Seguro — confirmar relatório mensal ── */}
+        <div className="bg-white border border-gray-100 rounded-2xl shadow-sm overflow-hidden">
+          <button
+            onClick={() => { setPortoOpen(o => !o); setPortoResult(null); setPortoPreview(null); setPortoError(""); setPortoLinhas(""); }}
+            className="w-full flex items-center justify-between px-6 py-4 hover:bg-gray-50/50 transition-colors"
+          >
+            <div className="flex items-center gap-3">
+              <Upload size={16} className="text-orange-500" />
+              <div className="text-left">
+                <p className="text-[14px] font-bold text-[#111827]">Confirmar relatório Porto Seguro</p>
+                <p className="text-[12px] text-gray-400 mt-0.5">Cole as linhas do relatório mensal para atualizar a base de comissões</p>
+              </div>
+            </div>
+            <ChevronDown size={16} className={`text-gray-400 transition-transform ${portoOpen ? "rotate-180" : ""}`} />
+          </button>
+
+          {portoOpen && (
+            <div className="border-t border-gray-100 px-6 py-5 space-y-4">
+              {portoResult ? (
+                <div className="flex items-center gap-3 bg-emerald-50 border border-emerald-200 rounded-xl p-4">
+                  <CheckCircle size={18} className="text-emerald-600 flex-shrink-0" />
+                  <div>
+                    <p className="text-[13px] font-bold text-emerald-700">
+                      Base atualizada — {portoResult.processadas} apólices ({portoResult.novas} novas)
+                    </p>
+                    <p className="text-[11px] text-gray-500 mt-0.5">As projeções Porto foram atualizadas automaticamente.</p>
+                    <button onClick={() => { setPortoResult(null); setPortoLinhas(""); setPortoPreview(null); }} className="mt-1.5 text-[11px] text-blue-500 hover:underline">
+                      Adicionar outro mês
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <>
+                  <textarea
+                    value={portoLinhas}
+                    onChange={e => { setPortoLinhas(e.target.value); setPortoPreview(null); setPortoError(""); }}
+                    placeholder={"Cole aqui as linhas do relatório da Porto:\nR$ 1.757,02\t1001690553\t355.535.508-23\tDIEGO FREIRE SANTOS\nR$ 933,33\t1001649179\t..."}
+                    rows={6}
+                    className="w-full bg-gray-50 border border-gray-200 text-gray-700 text-xs font-mono rounded-xl p-3 focus:outline-none focus:ring-2 focus:ring-orange-400/40 resize-y"
+                  />
+
+                  {portoError && (
+                    <div className="flex items-center gap-2 text-red-600 text-[12px] bg-red-50 border border-red-200 rounded-xl p-3">
+                      <AlertTriangle size={14} /> {portoError}
+                    </div>
+                  )}
+
+                  {!portoPreview && (
+                    <button
+                      onClick={async () => {
+                        setPortoPreviewLoading(true); setPortoPreview(null); setPortoError("");
+                        try {
+                          const r = await fetch("/api/porto/confirmar-mes", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ linhas: portoLinhas }) });
+                          const d = await r.json();
+                          if (!r.ok) throw new Error(d.error || "Erro ao processar");
+                          setPortoPreview(d.rows);
+                        } catch (e: any) { setPortoError(e.message); }
+                        finally { setPortoPreviewLoading(false); }
+                      }}
+                      disabled={!portoLinhas.trim() || portoPreviewLoading}
+                      className="flex items-center gap-2 bg-gray-100 hover:bg-gray-200 disabled:opacity-40 text-gray-700 font-bold px-4 py-2 rounded-xl text-[12px] transition-colors"
+                    >
+                      {portoPreviewLoading && <Loader2 size={13} className="animate-spin" />}
+                      Pré-visualizar
+                    </button>
+                  )}
+
+                  {portoPreview && (
+                    <div className="space-y-3">
+                      <div className="flex items-center justify-between">
+                        <p className="text-[12px] text-gray-600">
+                          <span className="font-bold text-[#111827]">{portoPreview.length}</span> apólices ·{" "}
+                          <span className="font-bold text-blue-600">{portoPreview.filter(r => r.nova).length} novas</span>{" "}
+                          · <span className="text-gray-400">{portoPreview.filter(r => !r.nova).length} já na base</span>
+                        </p>
+                        <button onClick={() => setPortoPreview(null)} className="text-[11px] text-gray-400 hover:text-gray-600">Editar</button>
+                      </div>
+                      <div className="rounded-xl border border-gray-100 overflow-hidden">
+                        <table className="w-full text-[11px]">
+                          <thead>
+                            <tr className="bg-gray-50 text-gray-500 text-left">
+                              <th className="px-3 py-2">Apólice</th>
+                              <th className="px-3 py-2">Nome</th>
+                              <th className="px-3 py-2 text-right">Valor</th>
+                              <th className="px-3 py-2 text-center">Status</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {portoPreview.map((r, i) => (
+                              <tr key={i} className="border-t border-gray-100">
+                                <td className="px-3 py-1.5 font-mono text-gray-600">{r.apolice}</td>
+                                <td className="px-3 py-1.5 text-gray-700">{r.nome || "—"}</td>
+                                <td className="px-3 py-1.5 text-right text-emerald-600 font-semibold">{r.valor.toLocaleString("pt-BR", { style: "currency", currency: "BRL" })}</td>
+                                <td className="px-3 py-1.5 text-center">
+                                  {r.nova
+                                    ? <span className="bg-blue-100 text-blue-600 px-2 py-0.5 rounded text-[10px] font-bold">Nova</span>
+                                    : <span className="bg-gray-100 text-gray-500 px-2 py-0.5 rounded text-[10px]">Existente</span>
+                                  }
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                      <button
+                        onClick={async () => {
+                          setPortoSaveLoading(true); setPortoError("");
+                          const mes = startDate.substring(0, 7);
+                          try {
+                            const r = await fetch("/api/porto/confirmar-mes", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mes, linhas: portoLinhas }) });
+                            const d = await r.json();
+                            if (!r.ok) throw new Error(d.error || "Erro ao salvar");
+                            setPortoResult(d); setPortoPreview(null);
+                          } catch (e: any) { setPortoError(e.message); }
+                          finally { setPortoSaveLoading(false); }
+                        }}
+                        disabled={portoSaveLoading}
+                        className="flex items-center gap-2 bg-orange-500 hover:bg-orange-600 disabled:opacity-50 text-white font-bold px-5 py-2.5 rounded-xl text-[12px] transition-colors"
+                      >
+                        {portoSaveLoading ? <Loader2 size={13} className="animate-spin" /> : <Check size={13} strokeWidth={3} />}
+                        Salvar na base — {startDate.substring(0, 7)}
+                      </button>
+                    </div>
+                  )}
+                </>
+              )}
             </div>
           )}
         </div>
