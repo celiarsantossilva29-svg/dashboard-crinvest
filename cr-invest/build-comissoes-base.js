@@ -283,6 +283,15 @@ const iApolice  = hdr.indexOf('APÓLICE');
 const iInicio   = hdr.indexOf('INÍCIO DE VIGÊNCIA');
 const iParcelas = hdr.indexOf('QUANTIDADE DE PARCELAS');
 const iPremio   = hdr.indexOf('PRÊMIO');
+const iProduto  = hdr.indexOf('NOME ABREVIADO DO PRODUTO');
+
+// Número de parcelas de comissão definido pelo tipo de produto Porto Seguro
+function nMesesByProduto(produto) {
+  const p = (produto || '').toUpperCase();
+  if (p.includes('IMÓVEL') || p.includes('IMOVEL')) return 12;
+  if (p.includes('AUTO') || p.includes('MOTO') || p.includes('VIAGEM')) return 6;
+  return null; // desconhecido — usa cálculo
+}
 
 function parseBRDate(s) {
   const p = String(s || '').trim().split('/').map(Number);
@@ -306,6 +315,7 @@ for (let i = 1; i < lines.length; i++) {
     inicio,
     parcelas:  parseBRNum(cols[iParcelas]),
     premio:    parseBRNum(cols[iPremio]),
+    produto:   cols[iProduto] || '',
   };
 }
 
@@ -347,43 +357,44 @@ for (const [ap, meses] of Object.entries(byAp)) {
   const firstMes  = mesList[0];
   const lastMes   = mesList[mesList.length-1];
 
-  // nMeses real = premio * 4% / commBase (bruta, antes NET_FACTOR)
-  let nMesesReal = null;
-  if (txt && txt.premio > 0 && commBase > 0) {
-    const commBruta = commBase / NET; // desfaz o NET_FACTOR para pegar bruta
-    nMesesReal = Math.round((txt.premio * 0.04) / commBruta);
-    if (nMesesReal < 1 || nMesesReal > 60) nMesesReal = null;
+  // Prioridade: 1) produto (12 imóvel / 6 auto)  2) cálculo prêmio  3) fallback 12
+  const nMesProduto = txt ? nMesesByProduto(txt.produto) : null;
+
+  let nMesesCalc = null;
+  if (!nMesProduto && txt && txt.premio > 0 && commBase > 0) {
+    const commBruta = commBase / NET;
+    nMesesCalc = Math.round((txt.premio * 0.04) / commBruta);
+    if (nMesesCalc < 1 || nMesesCalc > 60) nMesesCalc = null;
   }
 
-  // nMeses que o sistema usa hoje
-  const nMesSistema = txt
-    ? ((txt.parcelas >= 1 && txt.parcelas <= 12) ? Math.round(txt.parcelas) : 12)
-    : 12;
+  const nMeses = nMesProduto || nMesesCalc || 12;
 
   resultado[ap] = {
-    cliente:      txt?.cliente || mesList[0],
+    cliente:    txt?.cliente || mesList[0],
     commBase,
     firstMes,
     lastMes,
-    nMesesReal,
-    nMesSistema,
-    premio:       txt?.premio || 0,
-    inicio:       txt ? mk(txt.inicio) : null,
-    mesesPagos:   mesList.length,
+    nMeses,
+    nMesProduto,
+    nMesesCalc,
+    produto:    txt?.produto || '',
+    premio:     txt?.premio || 0,
+    inicio:     txt ? mk(txt.inicio) : null,
+    mesesPagos: mesList.length,
   };
 }
 
-// ── Relatório de discrepâncias ─────────────────────────────────────────────────
-console.log('\n=== APÓLICES COM nMeses DIFERENTE DO QUE USAMOS ===');
-let ok = 0, diff = 0;
+// ── Relatório de nMeses por produto ────────────────────────────────────────────
+console.log('\n=== nMeses POR PRODUTO ===');
+const porProduto = {};
 for (const [ap, r] of Object.entries(resultado)) {
-  if (!r.nMesesReal) continue;
-  if (r.nMesesReal !== r.nMesSistema) {
-    console.log(`  ${ap.padEnd(15)} ${(r.cliente||'').substring(0,28).padEnd(30)} nReal=${String(r.nMesesReal).padEnd(3)} nSistema=${r.nMesSistema} | R$${r.commBase.toFixed(2)}/mês`);
-    diff++;
-  } else ok++;
+  const k = r.produto || '(sem produto)';
+  if (!porProduto[k]) porProduto[k] = { n: 0, nMeses: r.nMeses };
+  porProduto[k].n++;
 }
-console.log(`\n  OK: ${ok} | Diferente: ${diff}`);
+for (const [prod, d] of Object.entries(porProduto).sort()) {
+  console.log(`  ${prod.padEnd(30)} ${d.n} apólices → ${d.nMeses}x`);
+}
 
 // ── Gera projeção para meses futuros ──────────────────────────────────────────
 const hoje = new Date();
@@ -394,7 +405,7 @@ for (const [ap, r] of Object.entries(resultado)) {
   const inicio = txt.inicio;
   const day    = inicio.getUTCDate();
   const fc     = addMonths(inicio, day <= 22 ? 1 : 2);
-  const nMeses = r.nMesesReal || r.nMesSistema;
+  const nMeses = r.nMeses;
 
   for (let j = 0; j < nMeses; j++) {
     const dt  = addMonths(fc, j);
@@ -421,7 +432,7 @@ for (const [mes, d] of Object.entries(projecao).sort()) {
 // ── Salva comissoes-base.json ──────────────────────────────────────────────────
 const base = {};
 for (const [ap, r] of Object.entries(resultado)) {
-  base[ap] = { commBase: r.commBase, nMeses: r.nMesesReal || r.nMesSistema };
+  base[ap] = { commBase: r.commBase, nMeses: r.nMeses };
 }
 fs.writeFileSync(path.join(__dirname, 'comissoes-base.json'), JSON.stringify(base, null, 2));
 console.log('\n✅ comissoes-base.json salvo com', Object.keys(base).length, 'apólices');
