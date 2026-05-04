@@ -474,8 +474,9 @@ export default function VendasPage() {
     let recebido = 0, qtPagas = 0;
     let comissaoTotal = 0, qtPendentes = 0;
     let totalVendido = 0, qtVendas = 0;
-    // Breakdown para o período selecionado
-    let brkBruto = 0, brkRoyalties = 0, brkImpostos = 0;
+    // Breakdown separado por administradora
+    let portoBruto = 0, portoRoyalties = 0, portoImpostos = 0;
+    let embraconBruto = 0, embraconImpostos = 0;
 
     for (const s of sales) {
       if (s.closedAt && new Date(s.closedAt).getUTCFullYear() < 2025) continue;
@@ -487,6 +488,7 @@ export default function VendasPage() {
       const brutoPerInst = (s.value * 0.04) / Math.max(1, insts.length);
       const { royalties: rRate, impostos: iRate } = getDeductions(s.administradora);
       const commPerInst = brutoPerInst * (1 - rRate - iRate);
+      const isEmbracon = (s.administradora || "").toLowerCase().includes("embracon");
 
       // Vendas fechadas no mês selecionado
       const saleDate = s.closedAt?.split("T")[0] ?? "";
@@ -501,11 +503,15 @@ export default function VendasPage() {
         if (i.status === "CANCELADO") continue;
         comissaoTotal += commPerInst;
         const venc = new Date(i.dataVencimento);
-        // Acumular breakdown para o período selecionado
         if (venc >= monthStart && venc <= monthEnd) {
-          brkBruto      += brutoPerInst;
-          brkRoyalties  += brutoPerInst * rRate;
-          brkImpostos   += brutoPerInst * iRate;
+          if (isEmbracon) {
+            embraconBruto   += brutoPerInst;
+            embraconImpostos += brutoPerInst * iRate;
+          } else {
+            portoBruto     += brutoPerInst;
+            portoRoyalties += brutoPerInst * rRate;
+            portoImpostos  += brutoPerInst * iRate;
+          }
         }
         if (i.pago || i.status === "PAGO") { recebido += commPerInst; qtPagas++; }
         else if (i.status === "INADIMPLENTE") emRisco += commPerInst;
@@ -518,7 +524,10 @@ export default function VendasPage() {
       }
     }
     const faltante = comissaoTotal - recebido;
-    const breakdown = { bruto: brkBruto, royalties: brkRoyalties, impostos: brkImpostos, liquido: brkBruto - brkRoyalties - brkImpostos };
+    const breakdown = {
+      porto:    { bruto: portoBruto,    royalties: portoRoyalties, impostos: portoImpostos,    liquido: portoBruto    - portoRoyalties - portoImpostos },
+      embracon: { bruto: embraconBruto, royalties: 0,              impostos: embraconImpostos, liquido: embraconBruto - embraconImpostos },
+    };
     return { carteiraAtiva, qtContratos, comissaoPrevistaMes, qtParcMes, emRisco, recebido, qtPagas, comissaoTotal, faltante, qtPendentes, breakdown, totalVendido, qtVendas };
   }, [sales, startDate, endDate]); // eslint-disable-line
 
@@ -759,41 +768,76 @@ export default function VendasPage() {
         </div>
 
         {/* ── Breakdown comissão do período ── */}
-        {kpis.breakdown.bruto > 0 && (
-          <div className="bg-white border border-gray-100 rounded-2xl shadow-sm px-6 py-4">
-            <p className="text-[10px] uppercase font-bold text-gray-400 tracking-wider mb-3">
+        {(kpis.breakdown.porto.bruto > 0 || kpis.breakdown.embracon.bruto > 0) && (
+          <div className="bg-white border border-gray-100 rounded-2xl shadow-sm px-6 py-4 space-y-4">
+            <p className="text-[10px] uppercase font-bold text-gray-400 tracking-wider">
               Estrutura da comissão · <span className="capitalize normal-case font-normal">{rangeLabel(startDate, endDate)}</span>
             </p>
-            <div className="flex items-center gap-0 flex-wrap">
-              {/* Bruto */}
-              <div className="flex flex-col gap-0.5 px-4 py-2">
-                <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wide">Comissão bruta (4%)</p>
-                <p className="text-[20px] font-black text-gray-700">{fmtBRL(kpis.breakdown.bruto)}</p>
-                <p className="text-[10px] text-gray-400">base contratada Porto Seguro</p>
-              </div>
-              <div className="text-gray-200 font-black text-lg px-2 self-center">→</div>
-              {/* Royalties */}
-              <div className="flex flex-col gap-0.5 px-4 py-2 border-l border-gray-100">
-                <p className="text-[10px] font-bold text-red-400 uppercase tracking-wide">(−) Royalties franquia 8,4%</p>
-                <p className="text-[20px] font-black text-red-500">−{fmtBRL(kpis.breakdown.royalties)}</p>
-                <p className="text-[10px] text-gray-400">Porto Seguro retém</p>
-              </div>
-              {/* Impostos */}
-              <div className="flex flex-col gap-0.5 px-4 py-2 border-l border-gray-100">
-                <p className="text-[10px] font-bold text-orange-400 uppercase tracking-wide">(−) Simples Nacional 6,9%</p>
-                <p className="text-[20px] font-black text-orange-500">−{fmtBRL(kpis.breakdown.impostos)}</p>
-                <p className="text-[10px] text-gray-400">imposto sobre receita</p>
-              </div>
-              <div className="text-gray-200 font-black text-lg px-2 self-center">→</div>
-              {/* Líquido */}
-              <div className="flex flex-col gap-0.5 px-4 py-2 border-l-2 border-emerald-200 bg-emerald-50/40 rounded-xl ml-1">
-                <p className="text-[10px] font-bold text-emerald-600 uppercase tracking-wide">= Repasse líquido (~3,4%)</p>
-                <p className="text-[24px] font-black text-emerald-600">{fmtBRL(kpis.breakdown.liquido)}</p>
-                <p className="text-[10px] text-emerald-500 font-bold">
-                  {kpis.breakdown.bruto > 0 ? ((kpis.breakdown.liquido / kpis.breakdown.bruto) * 100).toFixed(1) : "0"}% do bruto
-                </p>
-              </div>
-            </div>
+
+            {/* Porto Seguro */}
+            {kpis.breakdown.porto.bruto > 0 && (() => {
+              const p = kpis.breakdown.porto;
+              return (
+                <div>
+                  <p className="text-[10px] font-bold text-gray-500 mb-2">Porto Seguro</p>
+                  <div className="flex items-center gap-0 flex-wrap">
+                    <div className="flex flex-col gap-0.5 px-4 py-2">
+                      <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wide">Bruto (4%)</p>
+                      <p className="text-[20px] font-black text-gray-700">{fmtBRL(p.bruto)}</p>
+                    </div>
+                    <div className="text-gray-200 font-black text-lg px-2 self-center">→</div>
+                    <div className="flex flex-col gap-0.5 px-4 py-2 border-l border-gray-100">
+                      <p className="text-[10px] font-bold text-red-400 uppercase tracking-wide">(−) Royalties 8,4%</p>
+                      <p className="text-[20px] font-black text-red-500">−{fmtBRL(p.royalties)}</p>
+                      <p className="text-[10px] text-gray-400">{fmtBRL(p.bruto)} × 8,4%</p>
+                    </div>
+                    <div className="flex flex-col gap-0.5 px-4 py-2 border-l border-gray-100">
+                      <p className="text-[10px] font-bold text-orange-400 uppercase tracking-wide">(−) Simples 6,9%</p>
+                      <p className="text-[20px] font-black text-orange-500">−{fmtBRL(p.impostos)}</p>
+                      <p className="text-[10px] text-gray-400">{fmtBRL(p.bruto)} × 6,9%</p>
+                    </div>
+                    <div className="text-gray-200 font-black text-lg px-2 self-center">→</div>
+                    <div className="flex flex-col gap-0.5 px-4 py-2 border-l-2 border-emerald-200 bg-emerald-50/40 rounded-xl ml-1">
+                      <p className="text-[10px] font-bold text-emerald-600 uppercase tracking-wide">= Líquido</p>
+                      <p className="text-[24px] font-black text-emerald-600">{fmtBRL(p.liquido)}</p>
+                      <p className="text-[10px] text-emerald-500 font-bold">
+                        {((p.liquido / p.bruto) * 100).toFixed(1)}% do bruto
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
+
+            {/* Embracon */}
+            {kpis.breakdown.embracon.bruto > 0 && (() => {
+              const e = kpis.breakdown.embracon;
+              return (
+                <div className={kpis.breakdown.porto.bruto > 0 ? "border-t border-gray-100 pt-4" : ""}>
+                  <p className="text-[10px] font-bold text-gray-500 mb-2">Embracon</p>
+                  <div className="flex items-center gap-0 flex-wrap">
+                    <div className="flex flex-col gap-0.5 px-4 py-2">
+                      <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wide">Bruto (4%)</p>
+                      <p className="text-[20px] font-black text-gray-700">{fmtBRL(e.bruto)}</p>
+                    </div>
+                    <div className="text-gray-200 font-black text-lg px-2 self-center">→</div>
+                    <div className="flex flex-col gap-0.5 px-4 py-2 border-l border-gray-100">
+                      <p className="text-[10px] font-bold text-orange-400 uppercase tracking-wide">(−) Simples 7%</p>
+                      <p className="text-[20px] font-black text-orange-500">−{fmtBRL(e.impostos)}</p>
+                      <p className="text-[10px] text-gray-400">{fmtBRL(e.bruto)} × 7%</p>
+                    </div>
+                    <div className="text-gray-200 font-black text-lg px-2 self-center">→</div>
+                    <div className="flex flex-col gap-0.5 px-4 py-2 border-l-2 border-emerald-200 bg-emerald-50/40 rounded-xl ml-1">
+                      <p className="text-[10px] font-bold text-emerald-600 uppercase tracking-wide">= Líquido</p>
+                      <p className="text-[24px] font-black text-emerald-600">{fmtBRL(e.liquido)}</p>
+                      <p className="text-[10px] text-emerald-500 font-bold">
+                        {((e.liquido / e.bruto) * 100).toFixed(1)}% do bruto
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
           </div>
         )}
 
