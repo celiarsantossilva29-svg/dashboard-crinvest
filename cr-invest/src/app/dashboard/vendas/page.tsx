@@ -768,46 +768,57 @@ export default function VendasPage() {
         </div>
 
         {/* ── Breakdown comissão do período ── */}
-        {(kpis.breakdown.porto.bruto > 0 || kpis.breakdown.embracon.bruto > 0) && (
+        {(() => {
+          // Porto: usa valor confirmado do relatório quando disponível
+          const mesKey = startDate.substring(0, 7).replace("-", "_");
+          const confirmedLiquido = confirmedAmounts[mesKey] ?? 0;
+          const NET_PORTO = 1 - 0.084 - 0.069;
+          const portoBruto    = confirmedLiquido > 0 ? confirmedLiquido / NET_PORTO : kpis.breakdown.porto.bruto;
+          const portoRoyalties = portoBruto * 0.084;
+          const portoImpostos  = portoBruto * 0.069;
+          const portoLiquido   = confirmedLiquido > 0 ? confirmedLiquido : kpis.breakdown.porto.liquido;
+          const showPorto = portoBruto > 0;
+          const showEmbracon = kpis.breakdown.embracon.bruto > 0;
+          if (!showPorto && !showEmbracon) return null;
+          return (
           <div className="bg-white border border-gray-100 rounded-2xl shadow-sm px-6 py-4 space-y-4">
             <p className="text-[10px] uppercase font-bold text-gray-400 tracking-wider">
               Estrutura da comissão · <span className="capitalize normal-case font-normal">{rangeLabel(startDate, endDate)}</span>
             </p>
 
             {/* Porto Seguro */}
-            {kpis.breakdown.porto.bruto > 0 && (() => {
-              const p = kpis.breakdown.porto;
-              return (
-                <div>
-                  <p className="text-[10px] font-bold text-gray-500 mb-2">Porto Seguro</p>
-                  <div className="flex items-center gap-0 flex-wrap">
-                    <div className="flex flex-col gap-0.5 px-4 py-2">
-                      <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wide">Bruto (4%)</p>
-                      <p className="text-[20px] font-black text-gray-700">{fmtBRL(p.bruto)}</p>
-                    </div>
-                    <div className="text-gray-200 font-black text-lg px-2 self-center">→</div>
-                    <div className="flex flex-col gap-0.5 px-4 py-2 border-l border-gray-100">
-                      <p className="text-[10px] font-bold text-red-400 uppercase tracking-wide">(−) Royalties 8,4%</p>
-                      <p className="text-[20px] font-black text-red-500">−{fmtBRL(p.royalties)}</p>
-                      <p className="text-[10px] text-gray-400">{fmtBRL(p.bruto)} × 8,4%</p>
-                    </div>
-                    <div className="flex flex-col gap-0.5 px-4 py-2 border-l border-gray-100">
-                      <p className="text-[10px] font-bold text-orange-400 uppercase tracking-wide">(−) Simples 6,9%</p>
-                      <p className="text-[20px] font-black text-orange-500">−{fmtBRL(p.impostos)}</p>
-                      <p className="text-[10px] text-gray-400">{fmtBRL(p.bruto)} × 6,9%</p>
-                    </div>
-                    <div className="text-gray-200 font-black text-lg px-2 self-center">→</div>
-                    <div className="flex flex-col gap-0.5 px-4 py-2 border-l-2 border-emerald-200 bg-emerald-50/40 rounded-xl ml-1">
-                      <p className="text-[10px] font-bold text-emerald-600 uppercase tracking-wide">= Líquido</p>
-                      <p className="text-[24px] font-black text-emerald-600">{fmtBRL(p.liquido)}</p>
-                      <p className="text-[10px] text-emerald-500 font-bold">
-                        {((p.liquido / p.bruto) * 100).toFixed(1)}% do bruto
-                      </p>
-                    </div>
+            {showPorto && (
+              <div>
+                <p className="text-[10px] font-bold text-gray-500 mb-2">
+                  Porto Seguro{confirmedLiquido > 0 && <span className="ml-1 text-emerald-500">(valor confirmado)</span>}
+                </p>
+                <div className="flex items-center gap-0 flex-wrap">
+                  <div className="flex flex-col gap-0.5 px-4 py-2">
+                    <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wide">Bruto (4%)</p>
+                    <p className="text-[20px] font-black text-gray-700">{fmtBRL(portoBruto)}</p>
+                  </div>
+                  <div className="text-gray-200 font-black text-lg px-2 self-center">→</div>
+                  <div className="flex flex-col gap-0.5 px-4 py-2 border-l border-gray-100">
+                    <p className="text-[10px] font-bold text-red-400 uppercase tracking-wide">(−) Royalties 8,4%</p>
+                    <p className="text-[20px] font-black text-red-500">−{fmtBRL(portoRoyalties)}</p>
+                    <p className="text-[10px] text-gray-400">{fmtBRL(portoBruto)} × 8,4%</p>
+                  </div>
+                  <div className="flex flex-col gap-0.5 px-4 py-2 border-l border-gray-100">
+                    <p className="text-[10px] font-bold text-orange-400 uppercase tracking-wide">(−) Simples 6,9%</p>
+                    <p className="text-[20px] font-black text-orange-500">−{fmtBRL(portoImpostos)}</p>
+                    <p className="text-[10px] text-gray-400">{fmtBRL(portoBruto)} × 6,9%</p>
+                  </div>
+                  <div className="text-gray-200 font-black text-lg px-2 self-center">→</div>
+                  <div className="flex flex-col gap-0.5 px-4 py-2 border-l-2 border-emerald-200 bg-emerald-50/40 rounded-xl ml-1">
+                    <p className="text-[10px] font-bold text-emerald-600 uppercase tracking-wide">= Líquido</p>
+                    <p className="text-[24px] font-black text-emerald-600">{fmtBRL(portoLiquido)}</p>
+                    <p className="text-[10px] text-emerald-500 font-bold">
+                      {((portoLiquido / portoBruto) * 100).toFixed(1)}% do bruto
+                    </p>
                   </div>
                 </div>
-              );
-            })()}
+              </div>
+            )}
 
             {/* Embracon */}
             {kpis.breakdown.embracon.bruto > 0 && (() => {
@@ -839,7 +850,8 @@ export default function VendasPage() {
               );
             })()}
           </div>
-        )}
+          );
+        })()}
 
         {/* ── Chart ── */}
         <div className="bg-white border border-gray-100 rounded-2xl p-6 shadow-sm overflow-hidden">
