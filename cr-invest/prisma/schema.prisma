@@ -40,6 +40,7 @@ model Vendedor {
 
 model Lead {
   id               String    @id
+  name             String?
   source           String
   campaignId       String?
   campaignName     String?
@@ -55,16 +56,20 @@ model Lead {
   goToCalls        Int       @default(0)
   firstCallAt      DateTime?
   leadPhones       String[]  @default([])
+  tags             String[]  @default([])
   // ── Rastreabilidade Closer
   noShow           Boolean   @default(false)
   noShowAt         DateTime?          // Data em que o lead entrou em "Reagendamento" (não compareceu)
   sdrScore         Int?
+  recuperacaoAt    DateTime?          // Data em que entrou no funil de Recuperação ("Contato inicial")
   // ── Pipeline
   contactedAt      DateTime?
   qualifiedAt      DateTime?
   scheduledAt      DateTime?
   scheduledBy      String?            // SDR que moveu o lead para "1ª Reunião Confirmada"
   meetingAt        DateTime?
+  meeting2At       DateTime?          // Data em que entrou em "2° Reunião AGENDADA"
+  negociacaoAt     DateTime?          // Data em que entrou em "Negociação"
   closedAt         DateTime?
   status           String
   lostReason       String?
@@ -95,6 +100,18 @@ model Sale {
   percentualSdr       Float?
   valorComissaoSdr    Float?
   clienteCpf          String?
+  origem              String?       // "Campanha Instagram" | "Indicação" | "Prospecção direta" | "Outro"
+  closerExterno       String?       // Nome digitado quando closer não é da equipe
+  percentualExterno   Float?        // % comissão customizada para closer externo
+  // Campos financeiros
+  produto             String?       // "imovel" | "auto"
+  statusValidacao     String        @default("aguardando") // "aguardando" | "validado" | "reprovado"
+  tentativasValidacao Int           @default(0)
+  dataValidacao       DateTime?
+  comissaoBruta       Float?        // 4% do valor da cota
+  comissaoPorParcela  Float?        // comissaoBruta / quantidadeParcelas (líquida)
+  quantidadeParcelas  Int           @default(12)
+  clienteTelefone     String?
   createdAt           DateTime      @default(now())
   installments        Installment[]
 }
@@ -282,4 +299,44 @@ model AppSetting {
   key       String   @id
   value     String
   updatedAt DateTime @updatedAt
+}
+
+// ── Gastos operacionais ──────────────────────────────────────────────────────
+
+model Gasto {
+  id              String    @id @default(cuid())
+  descricao       String
+  categoria       String    // "pessoas" | "espaco" | "tecnologia" | "marketing" | "outros"
+  subcategoria    String?
+  fornecedor      String?
+  tipo            String    @default("fixo") // "fixo" | "variavel"
+  valor           Float
+  dataGasto       DateTime
+  dataVencimento  DateTime?
+  status          String    @default("a_pagar") // "a_pagar" | "pago" | "atrasado"
+  dataPagamento   DateTime?
+  formaPagamento  String?
+  recorrente      Boolean   @default(false)
+  mesesRecorrencia Int?
+  comprovante     String?
+  observacoes     String?
+  saleId          String?   // preenchido quando gasto é comissão paga
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+}
+
+// ── Contatos de cobrança (inadimplência) ─────────────────────────────────────
+
+model ContatoCobranca {
+  id               String    @id @default(cuid())
+  saleId           String
+  clientName       String
+  dataContato      DateTime
+  tipoContato      String    // "telefone" | "whatsapp" | "email" | "presencial"
+  resultado        String    // "atendeu" | "nao_atendeu" | "prometeu_pagar" | "recusou"
+  proximaAcao      String?
+  dataProximaAcao  DateTime?
+  observacoes      String?
+  responsavel      String?   // nome do responsável
+  createdAt        DateTime  @default(now())
 }

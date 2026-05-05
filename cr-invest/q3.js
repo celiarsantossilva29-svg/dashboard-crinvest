@@ -1,0 +1,1 @@
+const { PrismaClient } = require('@prisma/client'); const p = new PrismaClient(); p.sale.updateMany({ where: { clientName: 'ISABELLA CECILIA MOREIRA MUNIZ' }, data: { closedAt: new Date('2026-03-19T21:00:00Z') } }).then(console.log).finally(() => p.$disconnect());

@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useCallback } from "react";
+import { useLocalStorage } from "@/hooks/useLocalStorage";
 import { useSession } from "next-auth/react";
 import { BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Tooltip, Legend, LineChart, Line, CartesianGrid, ReferenceLine } from "recharts";
 
@@ -35,7 +36,7 @@ interface DealCard { id: string; clientName: string; assignedTo: string; value: 
 interface LossReason { reason: string; count: number; }
 interface ApiData {
   agents: CloserStats[]; deals: DealCard[]; lossReasons: LossReason[];
-  totals: { vendas: number; receita: number; ticketMedioGeral: number; taxaWinGeral: number; totalReunioes: number; noShowGeral: number; leadTimeMedioGeral: number; };
+  totals: { vendas: number; receita: number; ticketMedioGeral: number; taxaWinGeral: number; totalReunioes: number; totalReunioes2: number; totalNegociacoes: number; noShowGeral: number; leadTimeMedioGeral: number; };
   syncStatus?: any;
 }
 type DealTab = "won" | "lost";
@@ -110,8 +111,8 @@ function FunnelChevron() {
 
 export default function PerformanceCloserPage() {
   const { start: ds, end: de } = getMonthRange();
-  const [start, setStart] = useState(ds);
-  const [end, setEnd] = useState(de);
+  const [start, setStart] = useLocalStorage("filter:performance-closer:start", ds);
+  const [end, setEnd] = useLocalStorage("filter:performance-closer:end", de);
   const [apiData, setApiData] = useState<ApiData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [dealTab, setDealTab] = useState<DealTab>("won");
@@ -203,12 +204,10 @@ export default function PerformanceCloserPage() {
   const pctAtingidoDaMeta = Math.min(100, Math.round((displayReceita / metaMesVal) * 100));
   const faltamReceita = Math.max(0, metaMesVal - displayReceita);
 
-  // Reuniões realizadas no período: per-agent when filter active, team total otherwise
-  const reunioesFeitas      = selectedAgent ? selectedAgent.totalReunioes : (totals?.totalReunioes ?? 0);
+  const reunioesFeitas      = selectedAgent ? selectedAgent.totalReunioes    : (totals?.totalReunioes    ?? 0);
+  const reunioes2Realizadas = selectedAgent ? (selectedAgent as any).totalReunioes2    : (totals?.totalReunioes2    ?? 0);
+  const propostasRealizadas = selectedAgent ? (selectedAgent as any).totalNegociacoes  : (totals?.totalNegociacoes  ?? 0);
   const totalVendasPeriodo  = displayVendas;
-  // Steps 2 & 3 not tracked per-agent — show 0 (placeholder for future implementation)
-  const reunioes2Realizadas = 0;
-  const propostasRealizadas = 0;
 
   const qtDiasPeriodo = Math.max(1, Math.ceil((new Date(end).getTime() - new Date(start).getTime()) / 86400000));
   const reunioesPorDia = (reunioesFeitas / qtDiasPeriodo).toFixed(1);

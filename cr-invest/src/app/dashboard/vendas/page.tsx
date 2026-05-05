@@ -1,9 +1,11 @@
 "use client";
 
 import { useState, useEffect, useMemo, useCallback } from "react";
+import { useLocalStorage } from "@/hooks/useLocalStorage";
 import {
   Search, Plus, X, Pencil, CheckCircle, Check, Ban,
   ChevronRight, ChevronDown, AlertTriangle, Loader2, Upload,
+  Calendar, TrendingUp, Printer, Clock, Database,
 } from "lucide-react";
 import { useSession } from "next-auth/react";
 import { ComposedChart, Bar, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend } from "recharts";
@@ -50,6 +52,17 @@ function rangeLabel(start: string, end: string) {
     return new Intl.DateTimeFormat("pt-BR", { month: "long", year: "numeric" }).format(new Date(Date.UTC(sy, sm - 1, 15)));
   }
   return `${new Intl.DateTimeFormat("pt-BR", { day: "2-digit", month: "2-digit", year: "numeric", timeZone: "UTC" }).format(new Date(`${start}T12:00:00Z`))} até ${new Intl.DateTimeFormat("pt-BR", { day: "2-digit", month: "2-digit", year: "numeric", timeZone: "UTC" }).format(new Date(`${end}T12:00:00Z`))}`;
+}
+
+function parsePortoCSV(text: string): string[] {
+  const cpfs: string[] = [];
+  for (const line of text.trim().split("\n")) {
+    const cols = line.includes("\t") ? line.split("\t") : line.split(";");
+    if (cols.length < 3) continue;
+    const cpf = cols[2].trim().replace(/\D/g, "");
+    if (cpf.length >= 11) cpfs.push(cpf);
+  }
+  return Array.from(new Set(cpfs));
 }
 
 // ─── Comissão helpers ─────────────────────────────────────────────────────────
@@ -163,15 +176,15 @@ export default function VendasPage() {
   const isAdmin = userRole === "admin";
 
   // ── Date range selector ─────────────────────────────────────────────────────
-  const [startDate, setStartDate] = useState(() => {
+  const [startDate, setStartDate] = useLocalStorage("filter:vendas:start", (() => {
     const d = new Date();
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-01`;
-  });
-  const [endDate, setEndDate] = useState(() => {
+  })());
+  const [endDate, setEndDate] = useLocalStorage("filter:vendas:end", (() => {
     const d = new Date();
     const y = d.getFullYear(), m = d.getMonth() + 1;
     return `${y}-${String(m).padStart(2, "0")}-${String(new Date(y, m, 0).getDate()).padStart(2, "0")}`;
-  });
+  })());
 
   // ── Data ────────────────────────────────────────────────────────────────────
   const [sales, setSales] = useState<Sale[]>([]);
@@ -184,6 +197,13 @@ export default function VendasPage() {
   const [detalhesPortoRaw, setDetalhesPortoRaw] = useState<Record<string, any[]>>({});
   // modal de detalhe do mês
   const [mesModal, setMesModal] = useState<string | null>(null);
+
+  // ── Tabs ────────────────────────────────────────────────────────────────────
+  const [activeTab, setActiveTab] = useState<"comissoes" | "pagamento">("comissoes");
+  const [assocMes, setAssocMes] = useState(() => new Date().toISOString().substring(0, 7));
+  const [assocData, setAssocData] = useState<any>(null);
+  const [assocLoading, setAssocLoading] = useState(false);
+  const [assocExpanded, setAssocExpanded] = useState<string | null>(null);
 
   const fetchSales = useCallback(async () => {
     setLoading(true);
@@ -232,6 +252,8 @@ export default function VendasPage() {
   const [portoSaveLoading, setPortoSaveLoading] = useState(false);
   const [portoResult, setPortoResult] = useState<{ processadas: number; novas: number } | null>(null);
   const [portoError, setPortoError] = useState("");
+
+  const [portoReconcileCount, setPortoReconcileCount] = useState<number | null>(null);
 
   // ── Modal ───────────────────────────────────────────────────────────────────
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -361,6 +383,17 @@ export default function VendasPage() {
     } finally { setConfirmingId(null); }
   };
 
+  // ── Pagamento a Associados ──────────────────────────────────────────────────
+  useEffect(() => {
+    if (activeTab !== "pagamento") return;
+    setAssocLoading(true);
+    fetch(`/api/comissoes/pagamento-associados?mes=${assocMes}`)
+      .then(r => r.json())
+      .then(d => setAssocData(d))
+      .catch(console.error)
+      .finally(() => setAssocLoading(false));
+  }, [activeTab, assocMes]);
+
   // ── Month range (for bulk confirm / KPIs) ───────────────────────────────────
   const monthStart = new Date(`${startDate}T00:00:00.000Z`);
   const monthEnd   = new Date(`${endDate}T23:59:59.999Z`);
@@ -372,7 +405,6 @@ export default function VendasPage() {
       const insts = sale.installments || [];
       if (insts.length > 0 && insts.every(i => i.status === "CANCELADO")) continue;
       const saleDate = sale.closedAt?.split("T")[0] ?? "";
-      if (saleDate < startDate || saleDate > endDate) continue;
 
       const dateKey = saleDate || "unknown";
       const produto  = (sale as any).produto ?? "outro";
@@ -391,10 +423,15 @@ export default function VendasPage() {
       g.sales.push(sale);
     }
     return Array.from(map.values());
-  }, [sales, startDate, endDate]);
+  }, [sales]);
 
   const filteredGroups = useMemo(() => {
-    let result = allGroups;
+    let result = allGroups.filter(g => {
+      const insts = g.sales.flatMap(s => s.installments || []);
+      const hasActive = insts.some(i => !i.pago && i.status !== "CANCELADO" && i.status !== "PAGO" && i.status !== "INADIMPLENTE");
+      const hasInadimplente = insts.some(i => i.status === "INADIMPLENTE");
+      return hasActive || hasInadimplente;
+    });
     if (search) {
       const q = search.toLowerCase();
       result = result.filter(g =>
@@ -471,12 +508,14 @@ export default function VendasPage() {
     let carteiraAtiva = 0, qtContratos = 0;
     let comissaoPrevistaMes = 0, qtParcMes = 0;
     let emRisco = 0;
-    let recebido = 0, qtPagas = 0;
+    let recebidoEmbracon = 0, qtPagas = 0;
     let comissaoTotal = 0, qtPendentes = 0;
     let totalVendido = 0, qtVendas = 0;
-    // Breakdown separado por administradora
     let portoBruto = 0, portoRoyalties = 0, portoImpostos = 0;
     let embraconBruto = 0, embraconImpostos = 0;
+
+    const startMesKey = `${monthStart.getUTCFullYear()}-${String(monthStart.getUTCMonth() + 1).padStart(2, "0")}`;
+    const endMesKey   = `${monthEnd.getUTCFullYear()}-${String(monthEnd.getUTCMonth() + 1).padStart(2, "0")}`;
 
     for (const s of sales) {
       if (s.closedAt && new Date(s.closedAt).getUTCFullYear() < 2025) continue;
@@ -490,46 +529,62 @@ export default function VendasPage() {
       const commPerInst = brutoPerInst * (1 - rRate - iRate);
       const isEmbracon = (s.administradora || "").toLowerCase().includes("embracon");
 
-      // Vendas fechadas no mês selecionado
       const saleDate = s.closedAt?.split("T")[0] ?? "";
       const inSelectedMonth = saleDate >= startDate && saleDate <= endDate;
       if (inSelectedMonth) { totalVendido += s.value; qtVendas++; }
 
-      // Carteira ativa: vendas do mês com parcelas pendentes
       const hasActivePending = insts.some(i => !i.pago && i.status !== "CANCELADO" && i.status !== "PAGO");
       if (inSelectedMonth && hasActivePending) { carteiraAtiva += s.value; qtContratos++; }
 
       for (const i of insts) {
         if (i.status === "CANCELADO") continue;
-        comissaoTotal += commPerInst;
         const venc = new Date(i.dataVencimento);
-        if (venc >= monthStart && venc <= monthEnd) {
+        const inPeriod = venc >= monthStart && venc <= monthEnd;
+
+        // Em risco: all-time
+        if (i.status === "INADIMPLENTE") emRisco += commPerInst;
+        else if (i.status === "PENDENTE") qtPendentes++;
+
+        // Comissão total: apenas meses futuros (após o período selecionado)
+        if (venc > monthEnd && i.status !== "CANCELADO" && !(i.pago || i.status === "PAGO")) {
+          comissaoTotal += commPerInst;
+        }
+
+        if (inPeriod) {
           if (isEmbracon) {
-            embraconBruto   += brutoPerInst;
+            embraconBruto    += brutoPerInst;
             embraconImpostos += brutoPerInst * iRate;
+            if (i.status === "PENDENTE") { comissaoPrevistaMes += commPerInst; qtParcMes++; }
+            if (i.pago || i.status === "PAGO") { recebidoEmbracon += commPerInst; qtPagas++; }
           } else {
             portoBruto     += brutoPerInst;
             portoRoyalties += brutoPerInst * rRate;
             portoImpostos  += brutoPerInst * iRate;
           }
         }
-        if (i.pago || i.status === "PAGO") { recebido += commPerInst; qtPagas++; }
-        else if (i.status === "INADIMPLENTE") emRisco += commPerInst;
-        else if (i.status === "PENDENTE") {
-          qtPendentes++;
-          if (venc >= monthStart && venc <= monthEnd) {
-            comissaoPrevistaMes += commPerInst; qtParcMes++;
-          }
-        }
       }
     }
-    const faltante = comissaoTotal - recebido;
+
+    // Porto: prevista = projeção; recebido = depósitos confirmados via relatório mensal
+    for (const [key, val] of Object.entries(projecaoPorto)) {
+      if (key >= startMesKey && key <= endMesKey) comissaoPrevistaMes += val;
+    }
+    let recebidoPorto = 0;
+    for (const [key, val] of Object.entries(confirmedAmounts)) {
+      // chave pode ser "YYYY_MM" ou "YYYY-MM"
+      const normalized = key.replace("_", "-");
+      if (normalized >= startMesKey && normalized <= endMesKey) recebidoPorto += val;
+    }
+
+    const recebido = recebidoPorto + recebidoEmbracon;
+    const faltante = comissaoPrevistaMes - recebido;
+
     const breakdown = {
       porto:    { bruto: portoBruto,    royalties: portoRoyalties, impostos: portoImpostos,    liquido: portoBruto    - portoRoyalties - portoImpostos },
       embracon: { bruto: embraconBruto, royalties: 0,              impostos: embraconImpostos, liquido: embraconBruto - embraconImpostos },
     };
     return { carteiraAtiva, qtContratos, comissaoPrevistaMes, qtParcMes, emRisco, recebido, qtPagas, comissaoTotal, faltante, qtPendentes, breakdown, totalVendido, qtVendas };
-  }, [sales, startDate, endDate]); // eslint-disable-line
+  }, [sales, startDate, endDate, projecaoPorto, confirmedAmounts]); // eslint-disable-line
 
   // ── Bulk confirm preview ────────────────────────────────────────────────────
   const bulkPreview = useMemo(() => {
@@ -725,131 +780,113 @@ export default function VendasPage() {
             <input type="date" value={endDate} onChange={e => setEndDate(e.target.value)}
               className="text-[13px] font-bold text-[#111827] bg-transparent border-none outline-none cursor-pointer" />
           </div>
+          <button
+            onClick={() => { setPortoOpen(true); setPortoResult(null); setPortoPreview(null); setPortoError(""); setPortoLinhas(""); setPortoReconcileCount(null); }}
+            className="flex items-center gap-2 bg-white border border-gray-200 hover:bg-gray-50 text-gray-500 px-3 py-2 rounded-xl text-[13px] font-bold shadow-sm transition-colors"
+          >
+            <Upload size={14} />
+            Relatório Porto
+          </button>
           <button onClick={openNewModal} className="flex items-center gap-2 bg-[#1d1d1f] hover:bg-black text-white px-4 py-2 rounded-xl text-[13px] font-bold shadow-sm transition-colors">
             <Plus size={15} /> Registrar venda
           </button>
         </div>
       </header>
 
+      {/* ── Tabs ── */}
+      <div className="border-b border-gray-100 bg-[#F8F9FA]">
+        <div className="flex px-8 max-w-[1400px] mx-auto">
+          {([
+            { id: "comissoes", label: "Comissões" },
+            { id: "pagamento", label: "Pagamento a Associados" },
+          ] as const).map(tab => (
+            <button key={tab.id} onClick={() => setActiveTab(tab.id)}
+              className={`px-5 py-3 text-[13px] font-bold border-b-2 transition-colors -mb-px ${activeTab === tab.id ? "border-[#111827] text-[#111827]" : "border-transparent text-gray-400 hover:text-gray-600"}`}>
+              {tab.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
       <main className="flex-1 px-8 py-6 max-w-[1400px] w-full mx-auto flex flex-col gap-5">
+
+        {activeTab === "comissoes" && <>
 
         {/* ── KPIs ── */}
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
-          <div className="bg-[#1d1d1f] border border-gray-800 rounded-2xl p-5 shadow-sm col-span-2 md:col-span-1">
+          <div className="bg-white border border-gray-100 rounded-2xl p-5 shadow-sm col-span-2 md:col-span-1">
+            <Calendar size={15} className="text-gray-300 mb-2" />
             <p className="text-[10px] uppercase font-bold text-gray-400 tracking-wider mb-1 capitalize">{rangeLabel(startDate, endDate)}</p>
-            <p className="text-[20px] font-black text-white leading-none">{fmtBRL(kpis.totalVendido)}</p>
+            <p className="text-[20px] font-black text-[#111827] leading-none">{fmtBRL(kpis.totalVendido)}</p>
             <p className="text-[11px] text-gray-400 mt-1">{kpis.qtVendas} venda{kpis.qtVendas !== 1 ? "s" : ""} fechadas</p>
           </div>
-          <div className="bg-white border border-gray-100 rounded-2xl p-5 shadow-sm border-l-4 border-l-emerald-500">
+          <div className="bg-white border border-gray-100 rounded-2xl p-5 shadow-sm">
+            <TrendingUp size={15} className="text-gray-300 mb-2" />
             <p className="text-[10px] uppercase font-bold text-gray-400 tracking-wider mb-1">Comissão prevista</p>
             <p className="text-[20px] font-black text-emerald-600 leading-none">{fmtBRL(kpis.comissaoPrevistaMes)}</p>
             <p className="text-[11px] text-gray-400 mt-1">{kpis.qtParcMes} parcelas no período</p>
           </div>
-          <div className="bg-[#111827] border border-gray-800 rounded-2xl p-5 shadow-sm">
-            <p className="text-[10px] uppercase font-bold text-emerald-400 tracking-wider mb-1">✓ Recebido</p>
-            <p className="text-[20px] font-black text-emerald-400 leading-none">{fmtBRL(kpis.recebido)}</p>
+          <div className="bg-white border border-gray-100 rounded-2xl p-5 shadow-sm">
+            <Printer size={15} className="text-gray-300 mb-2" />
+            <p className="text-[10px] uppercase font-bold text-gray-400 tracking-wider mb-1">Recebido</p>
+            <p className="text-[20px] font-black text-emerald-600 leading-none">{fmtBRL(kpis.recebido)}</p>
             <p className="text-[11px] text-gray-400 mt-1">{kpis.qtPagas} parcelas pagas</p>
           </div>
-          <div className="bg-white border border-gray-100 rounded-2xl p-5 shadow-sm border-l-4 border-l-amber-500">
-            <p className="text-[10px] uppercase font-bold text-gray-400 tracking-wider mb-1">⏳ Falta receber</p>
+          <div className="bg-white border border-gray-100 rounded-2xl p-5 shadow-sm">
+            <Clock size={15} className="text-gray-300 mb-2" />
+            <p className="text-[10px] uppercase font-bold text-gray-400 tracking-wider mb-1">Falta receber</p>
             <p className="text-[20px] font-black text-amber-600 leading-none">{fmtBRL(kpis.faltante)}</p>
             <p className="text-[11px] text-gray-400 mt-1">{kpis.qtPendentes} parcelas pendentes</p>
           </div>
-          <div className={`bg-white border border-gray-100 rounded-2xl p-5 shadow-sm ${kpis.emRisco > 0 ? "border-l-4 border-l-red-500" : ""}`}>
+          <div className="bg-white border border-gray-100 rounded-2xl p-5 shadow-sm">
+            <AlertTriangle size={15} className="text-gray-300 mb-2" />
             <p className="text-[10px] uppercase font-bold text-gray-400 tracking-wider mb-1">Em risco</p>
             <p className={`text-[20px] font-black leading-none ${kpis.emRisco > 0 ? "text-red-600" : "text-gray-400"}`}>{fmtBRL(kpis.emRisco)}</p>
             <p className="text-[11px] text-gray-400 mt-1">{alerts.filter(a => a.type === "inadimplente").length} inadimplentes</p>
           </div>
           <div className="bg-white border border-gray-100 rounded-2xl p-5 shadow-sm">
+            <Database size={15} className="text-gray-300 mb-2" />
             <p className="text-[10px] uppercase font-bold text-gray-400 tracking-wider mb-1">Comissão total</p>
             <p className="text-[20px] font-black text-[#111827] leading-none">{fmtBRL(kpis.comissaoTotal)}</p>
             <p className="text-[11px] text-gray-400 mt-1">Repasse líquido (~3,4%)</p>
           </div>
         </div>
 
-        {/* ── Breakdown comissão do período ── */}
+        {/* ── Breakdown compacto ── */}
         {(() => {
-          // Porto: usa valor confirmado do relatório quando disponível
           const mesKey = startDate.substring(0, 7).replace("-", "_");
           const confirmedLiquido = confirmedAmounts[mesKey] ?? 0;
-          const NET_PORTO = 1 - 0.084 - 0.069;
-          const portoBruto    = confirmedLiquido > 0 ? confirmedLiquido / NET_PORTO : kpis.breakdown.porto.bruto;
-          const portoRoyalties = portoBruto * 0.084;
-          const portoImpostos  = portoBruto * 0.069;
-          const portoLiquido   = confirmedLiquido > 0 ? confirmedLiquido : kpis.breakdown.porto.liquido;
+          const portoBruto = confirmedLiquido > 0 ? confirmedLiquido / (1 - 0.084 - 0.069) : kpis.breakdown.porto.bruto;
+          const portoLiquido = confirmedLiquido > 0 ? confirmedLiquido : kpis.breakdown.porto.liquido;
+          const e = kpis.breakdown.embracon;
           const showPorto = portoBruto > 0;
-          const showEmbracon = kpis.breakdown.embracon.bruto > 0;
+          const showEmbracon = e.bruto > 0;
           if (!showPorto && !showEmbracon) return null;
           return (
-          <div className="bg-white border border-gray-100 rounded-2xl shadow-sm px-6 py-4 space-y-4">
-            <p className="text-[10px] uppercase font-bold text-gray-400 tracking-wider">
-              Estrutura da comissão · <span className="capitalize normal-case font-normal">{rangeLabel(startDate, endDate)}</span>
-            </p>
-
-            {/* Porto Seguro */}
-            {showPorto && (
-              <div>
-                <p className="text-[10px] font-bold text-gray-500 mb-2">
-                  Porto Seguro{confirmedLiquido > 0 && <span className="ml-1 text-emerald-500">(valor confirmado)</span>}
-                </p>
-                <div className="flex items-center gap-0 flex-wrap">
-                  <div className="flex flex-col gap-0.5 px-4 py-2">
-                    <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wide">Bruto (4%)</p>
-                    <p className="text-[20px] font-black text-gray-700">{fmtBRL(portoBruto)}</p>
-                  </div>
-                  <div className="text-gray-200 font-black text-lg px-2 self-center">→</div>
-                  <div className="flex flex-col gap-0.5 px-4 py-2 border-l border-gray-100">
-                    <p className="text-[10px] font-bold text-red-400 uppercase tracking-wide">(−) Royalties 8,4%</p>
-                    <p className="text-[20px] font-black text-red-500">−{fmtBRL(portoRoyalties)}</p>
-                    <p className="text-[10px] text-gray-400">{fmtBRL(portoBruto)} × 8,4%</p>
-                  </div>
-                  <div className="flex flex-col gap-0.5 px-4 py-2 border-l border-gray-100">
-                    <p className="text-[10px] font-bold text-orange-400 uppercase tracking-wide">(−) Simples 6,9%</p>
-                    <p className="text-[20px] font-black text-orange-500">−{fmtBRL(portoImpostos)}</p>
-                    <p className="text-[10px] text-gray-400">{fmtBRL(portoBruto)} × 6,9%</p>
-                  </div>
-                  <div className="text-gray-200 font-black text-lg px-2 self-center">→</div>
-                  <div className="flex flex-col gap-0.5 px-4 py-2 border-l-2 border-emerald-200 bg-emerald-50/40 rounded-xl ml-1">
-                    <p className="text-[10px] font-bold text-emerald-600 uppercase tracking-wide">= Líquido</p>
-                    <p className="text-[24px] font-black text-emerald-600">{fmtBRL(portoLiquido)}</p>
-                    <p className="text-[10px] text-emerald-500 font-bold">
-                      {((portoLiquido / portoBruto) * 100).toFixed(1)}% do bruto
-                    </p>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* Embracon */}
-            {kpis.breakdown.embracon.bruto > 0 && (() => {
-              const e = kpis.breakdown.embracon;
-              return (
-                <div className={kpis.breakdown.porto.bruto > 0 ? "border-t border-gray-100 pt-4" : ""}>
-                  <p className="text-[10px] font-bold text-gray-500 mb-2">Embracon</p>
-                  <div className="flex items-center gap-0 flex-wrap">
-                    <div className="flex flex-col gap-0.5 px-4 py-2">
-                      <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wide">Bruto (4%)</p>
-                      <p className="text-[20px] font-black text-gray-700">{fmtBRL(e.bruto)}</p>
-                    </div>
-                    <div className="text-gray-200 font-black text-lg px-2 self-center">→</div>
-                    <div className="flex flex-col gap-0.5 px-4 py-2 border-l border-gray-100">
-                      <p className="text-[10px] font-bold text-orange-400 uppercase tracking-wide">(−) Simples 7%</p>
-                      <p className="text-[20px] font-black text-orange-500">−{fmtBRL(e.impostos)}</p>
-                      <p className="text-[10px] text-gray-400">{fmtBRL(e.bruto)} × 7%</p>
-                    </div>
-                    <div className="text-gray-200 font-black text-lg px-2 self-center">→</div>
-                    <div className="flex flex-col gap-0.5 px-4 py-2 border-l-2 border-emerald-200 bg-emerald-50/40 rounded-xl ml-1">
-                      <p className="text-[10px] font-bold text-emerald-600 uppercase tracking-wide">= Líquido</p>
-                      <p className="text-[24px] font-black text-emerald-600">{fmtBRL(e.liquido)}</p>
-                      <p className="text-[10px] text-emerald-500 font-bold">
-                        {((e.liquido / e.bruto) * 100).toFixed(1)}% do bruto
-                      </p>
-                    </div>
-                  </div>
-                </div>
-              );
-            })()}
-          </div>
+            <div className="flex items-center gap-5 flex-wrap text-[12px] text-gray-500 px-1 -mt-1">
+              {showPorto && (
+                <span className="flex items-center gap-2">
+                  <span className="font-bold text-gray-400 text-[10px] uppercase tracking-wide">Porto</span>
+                  <span className="text-gray-600">{fmtBRL(portoBruto)}</span>
+                  <span className="text-gray-300">›</span>
+                  <span className="text-red-400">−{fmtBRL(portoBruto * 0.084 + portoBruto * 0.069)}</span>
+                  <span className="text-gray-300">›</span>
+                  <span className="font-bold text-emerald-600">{fmtBRL(portoLiquido)}</span>
+                  {confirmedLiquido > 0 && <span className="text-[10px] text-emerald-500">(confirmado)</span>}
+                </span>
+              )}
+              {showPorto && showEmbracon && <span className="text-gray-200">·</span>}
+              {showEmbracon && (
+                <span className="flex items-center gap-2">
+                  <span className="font-bold text-gray-400 text-[10px] uppercase tracking-wide">Embracon</span>
+                  <span className="text-gray-600">{fmtBRL(e.bruto)}</span>
+                  <span className="text-gray-300">›</span>
+                  <span className="text-red-400">−{fmtBRL(e.impostos)}</span>
+                  <span className="text-gray-300">›</span>
+                  <span className="font-bold text-emerald-600">{fmtBRL(e.liquido)}</span>
+                </span>
+              )}
+            </div>
           );
         })()}
 
@@ -900,231 +937,102 @@ export default function VendasPage() {
         </div>
 
         {/* ── Bulk confirm bar ── */}
-        <div className="bg-white border border-gray-100 rounded-2xl shadow-sm overflow-hidden">
-          <div className="px-6 py-4 flex items-center justify-between">
-            <div>
-              <p className="text-[14px] font-bold text-[#111827]">
-                Confirmar parcelas <span className="capitalize">{rangeLabel(startDate, endDate)}</span>
-              </p>
-              <p className="text-[12px] text-gray-400 mt-0.5">
-                {bulkPreview.toConfirm > 0
-                  ? <><span className="font-bold text-[#111827]">{bulkPreview.toConfirm}</span> parcelas pendentes</>
-                  : <span className="text-emerald-600 font-bold">Todas confirmadas ✓</span>
-                }
-                {bulkPreview.skipped > 0 && <span className="text-amber-600 font-bold"> · {bulkPreview.skipped} puladas (inadimplente/cancelado)</span>}
-              </p>
+        <div className="flex items-center justify-between px-1 -mt-1">
+          <p className="text-[12px] text-gray-400">
+            <span className="capitalize font-medium text-gray-500">{rangeLabel(startDate, endDate)}</span>
+            {" · "}
+            {bulkPreview.toConfirm > 0
+              ? <><span className="font-bold text-gray-600">{bulkPreview.toConfirm}</span> parcelas pendentes</>
+              : <span className="text-emerald-600 font-medium">Todas confirmadas ✓</span>
+            }
+            {bulkPreview.skipped > 0 && <span className="text-amber-500"> · {bulkPreview.skipped} puladas</span>}
+          </p>
+          <div className="flex items-center gap-2">
+            {bulkPreview.toConfirm > 0 && (
+              <button
+                onClick={() => setPendentesExpanded(p => !p)}
+                className="flex items-center gap-1 text-[11px] text-gray-400 hover:text-gray-600 transition-colors"
+              >
+                Ver lista <ChevronDown size={12} className={`transition-transform ${pendentesExpanded ? "rotate-180" : ""}`} />
+              </button>
+            )}
+            {bulkPreview.toConfirm > 0 && (
+              <button
+                onClick={() => setBulkPreviewOpen(true)}
+                className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1.5 rounded-lg text-[11px] font-bold transition-colors"
+              >
+                <Check size={11} strokeWidth={3} /> Confirmar {bulkPreview.toConfirm}
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Expandable pendentes list */}
+        {pendentesExpanded && pendentesDoMes.length > 0 && (
+          <div className="bg-white border border-gray-100 rounded-2xl shadow-sm overflow-hidden -mt-2">
+            <div className="px-5 py-3 bg-gray-50/60 border-b border-gray-100 flex items-center gap-3">
+              <div className="relative flex-1 max-w-[280px]">
+                <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+                <input
+                  type="text"
+                  value={pendentesSearch}
+                  onChange={(e) => setPendentesSearch(e.target.value)}
+                  placeholder="Filtrar por nome ou CPF..."
+                  className="block w-full pl-8 pr-3 py-1.5 bg-white border border-gray-200 rounded-lg text-[12px] text-[#111827] placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-emerald-500 transition-all"
+                />
+              </div>
             </div>
-            <div className="flex items-center gap-2">
-              {bulkPreview.toConfirm > 0 && (
-                <button
-                  onClick={() => setPendentesExpanded(p => !p)}
-                  className="flex items-center gap-1.5 text-[12px] font-bold text-gray-500 hover:text-[#111827] px-3 py-2 rounded-xl border border-gray-200 bg-white hover:bg-gray-50 transition-colors"
-                >
-                  Ver lista <ChevronDown size={13} className={`transition-transform ${pendentesExpanded ? "rotate-180" : ""}`} />
-                </button>
-              )}
-              {bulkPreview.toConfirm > 0 && (
-                <button
-                  onClick={() => setBulkPreviewOpen(true)}
-                  className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white px-5 py-2.5 rounded-xl text-[13px] font-bold transition-colors shadow-sm"
-                >
-                  <Check size={15} strokeWidth={3} /> Confirmar {bulkPreview.toConfirm}
-                </button>
-              )}
+            <div style={{ display:"grid", gridTemplateColumns:"3fr 1fr 1fr 1fr 160px", gap:"1rem" }} className="px-5 py-2 bg-gray-50/60 border-b border-gray-100">
+              <span className="text-[10px] uppercase font-bold text-gray-400 tracking-wider">Cliente</span>
+              <span className="text-[10px] uppercase font-bold text-gray-400 tracking-wider">Parcela</span>
+              <span className="text-[10px] uppercase font-bold text-gray-400 tracking-wider">Vencimento</span>
+              <span className="text-[10px] uppercase font-bold text-gray-400 tracking-wider">Comissão</span>
+              <span className="text-[10px] uppercase font-bold text-gray-400 tracking-wider text-right">Ação</span>
+            </div>
+            <div className="divide-y divide-gray-50 max-h-[350px] overflow-y-auto">
+              {pendentesDoMes
+                .filter(p => {
+                  if (!pendentesSearch) return true;
+                  const q = pendentesSearch.toLowerCase();
+                  return p.sale.clientName.toLowerCase().includes(q) || (p.sale.clienteCpf || "").includes(q);
+                })
+                .map(({ sale, inst, commPerInst }) => (
+                <div key={inst.id} style={{ display:"grid", gridTemplateColumns:"3fr 1fr 1fr 1fr 160px", gap:"1rem" }} className="items-center px-5 py-2.5">
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <div className="w-7 h-7 rounded-full bg-[#f5ebd9] flex items-center justify-center text-[10px] font-black text-[#8b5e34] shrink-0">
+                      {getInitials(sale.clientName)}
+                    </div>
+                    <div className="min-w-0">
+                      <p className="text-[12px] font-bold text-[#111827] truncate">{sale.clientName}</p>
+                      <p className="text-[10px] text-gray-400">{sale.clienteCpf || sale.administradora}</p>
+                    </div>
+                  </div>
+                  <span className="text-[12px] font-bold text-gray-600">P{inst.parcelaNumero}/12</span>
+                  <span className="text-[12px] text-gray-500">{fmtDateBR(inst.dataVencimento)}</span>
+                  <span className="text-[12px] font-bold text-emerald-700">{fmtBRL(commPerInst)}</span>
+                  <div className="flex items-center gap-1.5 justify-end">
+                    {isAdmin ? (
+                      <>
+                        <button disabled={confirmingId === inst.id} onClick={() => handleInstStatus(inst.id, "PAGO")}
+                          className="flex items-center gap-1 bg-emerald-600 hover:bg-emerald-700 text-white px-2 py-1.5 rounded-lg text-[10px] font-bold disabled:opacity-50 transition-colors">
+                          <Check size={10} strokeWidth={3} /> Pago
+                        </button>
+                        <button disabled={confirmingId === inst.id} onClick={() => handleSkipMonth(inst.id)}
+                          className="flex items-center gap-1 bg-amber-50 border border-amber-200 text-amber-700 hover:bg-amber-100 px-2 py-1.5 rounded-lg text-[10px] font-bold disabled:opacity-50 transition-colors">
+                          Pular
+                        </button>
+                        <button disabled={confirmingId === inst.id} onClick={() => handleInstStatus(inst.id, "INADIMPLENTE")}
+                          className="flex items-center gap-1 bg-white border border-red-200 text-red-600 hover:bg-red-50 px-2 py-1.5 rounded-lg text-[10px] font-bold disabled:opacity-50 transition-colors">
+                          Inad.
+                        </button>
+                      </>
+                    ) : <div />}
+                  </div>
+                </div>
+              ))}
             </div>
           </div>
-
-          {/* Expandable list */}
-          {pendentesExpanded && pendentesDoMes.length > 0 && (
-            <div className="border-t border-gray-100">
-              <div className="px-6 py-3 bg-gray-50/60 border-b border-gray-100 flex items-center justify-between gap-4">
-                <div className="relative w-[300px]">
-                  <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                    <Search size={14} className="text-gray-400" />
-                  </div>
-                  <input
-                    type="text"
-                    value={pendentesSearch}
-                    onChange={(e) => setPendentesSearch(e.target.value)}
-                    placeholder="Filtrar por nome..."
-                    className="block w-full pl-9 pr-3 py-1.5 bg-white border border-gray-200 rounded-lg text-sm text-[#111827] placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent transition-all"
-                  />
-                </div>
-              </div>
-              <div style={{ display:"grid", gridTemplateColumns:"3fr 1fr 1fr 1fr 160px", gap:"1rem" }} className="px-6 py-2 bg-gray-50/60 border-b border-gray-100">
-                <span className="text-[10px] uppercase font-bold text-gray-400 tracking-wider">Cliente</span>
-                <span className="text-[10px] uppercase font-bold text-gray-400 tracking-wider">Parcela</span>
-                <span className="text-[10px] uppercase font-bold text-gray-400 tracking-wider">Vencimento</span>
-                <span className="text-[10px] uppercase font-bold text-gray-400 tracking-wider">Comissão</span>
-                <span className="text-[10px] uppercase font-bold text-gray-400 tracking-wider text-right">Ação</span>
-              </div>
-              <div className="divide-y divide-gray-50 max-h-[350px] overflow-y-auto">
-                {pendentesDoMes
-                  .filter(p => !pendentesSearch || p.sale.clientName.toLowerCase().includes(pendentesSearch.toLowerCase()))
-                  .map(({ sale, inst, commPerInst }) => (
-                  <div key={inst.id} style={{ display:"grid", gridTemplateColumns:"3fr 1fr 1fr 1fr 160px", gap:"1rem" }} className="items-center px-6 py-2.5">
-                    <div className="flex items-center gap-2.5 min-w-0">
-                      <div className="w-7 h-7 rounded-full bg-[#f5ebd9] flex items-center justify-center text-[10px] font-black text-[#8b5e34] shrink-0">
-                        {getInitials(sale.clientName)}
-                      </div>
-                      <div className="min-w-0">
-                        <p className="text-[12px] font-bold text-[#111827] truncate">{sale.clientName}</p>
-                        <p className="text-[10px] text-gray-400">{sale.administradora}</p>
-                      </div>
-                    </div>
-                    <span className="text-[12px] font-bold text-gray-600">P{inst.parcelaNumero}/12</span>
-                    <span className="text-[12px] text-gray-500">{fmtDateBR(inst.dataVencimento)}</span>
-                    <span className="text-[12px] font-bold text-emerald-700">{fmtBRL(commPerInst)}</span>
-                    <div className="flex items-center gap-2 justify-end">
-                      {isAdmin ? (
-                        <>
-                          <button disabled={confirmingId === inst.id} onClick={() => handleInstStatus(inst.id, "PAGO")}
-                            className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white px-2.5 py-1.5 rounded-lg text-[10px] font-bold disabled:opacity-50 transition-colors">
-                            <Check size={10} strokeWidth={3} /> Pago
-                          </button>
-                          <button disabled={confirmingId === inst.id} onClick={() => handleInstStatus(inst.id, "INADIMPLENTE")}
-                            className="flex items-center gap-1.5 bg-white border border-red-200 text-red-600 hover:bg-red-50 px-2.5 py-1.5 rounded-lg text-[10px] font-bold disabled:opacity-50 transition-colors">
-                            Inadimplente
-                          </button>
-                        </>
-                      ) : <div />}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-        </div>
-
-        {/* ── Porto Seguro — confirmar relatório mensal ── */}
-        <div className="bg-white border border-gray-100 rounded-2xl shadow-sm overflow-hidden">
-          <button
-            onClick={() => { setPortoOpen(o => !o); setPortoResult(null); setPortoPreview(null); setPortoError(""); setPortoLinhas(""); }}
-            className="w-full flex items-center justify-between px-6 py-4 hover:bg-gray-50/50 transition-colors"
-          >
-            <div className="flex items-center gap-3">
-              <Upload size={16} className="text-orange-500" />
-              <div className="text-left">
-                <p className="text-[14px] font-bold text-[#111827]">Confirmar relatório Porto Seguro</p>
-                <p className="text-[12px] text-gray-400 mt-0.5">Cole as linhas do relatório mensal para atualizar a base de comissões</p>
-              </div>
-            </div>
-            <ChevronDown size={16} className={`text-gray-400 transition-transform ${portoOpen ? "rotate-180" : ""}`} />
-          </button>
-
-          {portoOpen && (
-            <div className="border-t border-gray-100 px-6 py-5 space-y-4">
-              {portoResult ? (
-                <div className="flex items-center gap-3 bg-emerald-50 border border-emerald-200 rounded-xl p-4">
-                  <CheckCircle size={18} className="text-emerald-600 flex-shrink-0" />
-                  <div>
-                    <p className="text-[13px] font-bold text-emerald-700">
-                      Base atualizada — {portoResult.processadas} apólices ({portoResult.novas} novas)
-                    </p>
-                    <p className="text-[11px] text-gray-500 mt-0.5">As projeções Porto foram atualizadas automaticamente.</p>
-                    <button onClick={() => { setPortoResult(null); setPortoLinhas(""); setPortoPreview(null); }} className="mt-1.5 text-[11px] text-blue-500 hover:underline">
-                      Adicionar outro mês
-                    </button>
-                  </div>
-                </div>
-              ) : (
-                <>
-                  <textarea
-                    value={portoLinhas}
-                    onChange={e => { setPortoLinhas(e.target.value); setPortoPreview(null); setPortoError(""); }}
-                    placeholder={"Cole aqui as linhas do relatório da Porto:\nR$ 1.757,02\t1001690553\t355.535.508-23\tDIEGO FREIRE SANTOS\nR$ 933,33\t1001649179\t..."}
-                    rows={6}
-                    className="w-full bg-gray-50 border border-gray-200 text-gray-700 text-xs font-mono rounded-xl p-3 focus:outline-none focus:ring-2 focus:ring-orange-400/40 resize-y"
-                  />
-
-                  {portoError && (
-                    <div className="flex items-center gap-2 text-red-600 text-[12px] bg-red-50 border border-red-200 rounded-xl p-3">
-                      <AlertTriangle size={14} /> {portoError}
-                    </div>
-                  )}
-
-                  {!portoPreview && (
-                    <button
-                      onClick={async () => {
-                        setPortoPreviewLoading(true); setPortoPreview(null); setPortoError("");
-                        try {
-                          const r = await fetch("/api/porto/confirmar-mes", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ linhas: portoLinhas }) });
-                          const d = await r.json();
-                          if (!r.ok) throw new Error(d.error || "Erro ao processar");
-                          setPortoPreview(d.rows);
-                        } catch (e: any) { setPortoError(e.message); }
-                        finally { setPortoPreviewLoading(false); }
-                      }}
-                      disabled={!portoLinhas.trim() || portoPreviewLoading}
-                      className="flex items-center gap-2 bg-gray-100 hover:bg-gray-200 disabled:opacity-40 text-gray-700 font-bold px-4 py-2 rounded-xl text-[12px] transition-colors"
-                    >
-                      {portoPreviewLoading && <Loader2 size={13} className="animate-spin" />}
-                      Pré-visualizar
-                    </button>
-                  )}
-
-                  {portoPreview && (
-                    <div className="space-y-3">
-                      <div className="flex items-center justify-between">
-                        <p className="text-[12px] text-gray-600">
-                          <span className="font-bold text-[#111827]">{portoPreview.length}</span> apólices ·{" "}
-                          <span className="font-bold text-blue-600">{portoPreview.filter(r => r.nova).length} novas</span>{" "}
-                          · <span className="text-gray-400">{portoPreview.filter(r => !r.nova).length} já na base</span>
-                        </p>
-                        <button onClick={() => setPortoPreview(null)} className="text-[11px] text-gray-400 hover:text-gray-600">Editar</button>
-                      </div>
-                      <div className="rounded-xl border border-gray-100 overflow-hidden">
-                        <table className="w-full text-[11px]">
-                          <thead>
-                            <tr className="bg-gray-50 text-gray-500 text-left">
-                              <th className="px-3 py-2">Apólice</th>
-                              <th className="px-3 py-2">Nome</th>
-                              <th className="px-3 py-2 text-right">Valor</th>
-                              <th className="px-3 py-2 text-center">Status</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {portoPreview.map((r, i) => (
-                              <tr key={i} className="border-t border-gray-100">
-                                <td className="px-3 py-1.5 font-mono text-gray-600">{r.apolice}</td>
-                                <td className="px-3 py-1.5 text-gray-700">{r.nome || "—"}</td>
-                                <td className="px-3 py-1.5 text-right text-emerald-600 font-semibold">{r.valor.toLocaleString("pt-BR", { style: "currency", currency: "BRL" })}</td>
-                                <td className="px-3 py-1.5 text-center">
-                                  {r.nova
-                                    ? <span className="bg-blue-100 text-blue-600 px-2 py-0.5 rounded text-[10px] font-bold">Nova</span>
-                                    : <span className="bg-gray-100 text-gray-500 px-2 py-0.5 rounded text-[10px]">Existente</span>
-                                  }
-                                </td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                      <button
-                        onClick={async () => {
-                          setPortoSaveLoading(true); setPortoError("");
-                          const mes = startDate.substring(0, 7);
-                          try {
-                            const r = await fetch("/api/porto/confirmar-mes", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mes, linhas: portoLinhas }) });
-                            const d = await r.json();
-                            if (!r.ok) throw new Error(d.error || "Erro ao salvar");
-                            setPortoResult(d); setPortoPreview(null);
-                          } catch (e: any) { setPortoError(e.message); }
-                          finally { setPortoSaveLoading(false); }
-                        }}
-                        disabled={portoSaveLoading}
-                        className="flex items-center gap-2 bg-orange-500 hover:bg-orange-600 disabled:opacity-50 text-white font-bold px-5 py-2.5 rounded-xl text-[12px] transition-colors"
-                      >
-                        {portoSaveLoading ? <Loader2 size={13} className="animate-spin" /> : <Check size={13} strokeWidth={3} />}
-                        Salvar na base — {startDate.substring(0, 7)}
-                      </button>
-                    </div>
-                  )}
-                </>
-              )}
-            </div>
-          )}
-        </div>
+        )}
 
         {/* ── Alerts ── */}
         {alerts.length > 0 && (
@@ -1443,6 +1351,105 @@ export default function VendasPage() {
             </div>
           )}
         </div>
+
+        </> /* fim aba comissoes */}
+
+        {activeTab === "pagamento" && (
+          <div className="flex flex-col gap-5">
+            {/* Cabeçalho da aba */}
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="text-[16px] font-black text-[#111827]">Pagamento a Associados</h2>
+                <p className="text-[12px] text-gray-400 mt-0.5">Comissões a pagar por closer e SDR no mês</p>
+              </div>
+              <div className="flex items-center gap-2">
+                <input
+                  type="month" value={assocMes}
+                  onChange={e => setAssocMes(e.target.value)}
+                  className="bg-white border border-gray-200 rounded-xl px-3 py-2 text-[13px] font-bold text-[#111827] outline-none"
+                />
+              </div>
+            </div>
+
+            {assocLoading ? (
+              <div className="bg-white border border-gray-100 rounded-2xl p-12 text-center text-[13px] text-gray-400 font-bold">Carregando...</div>
+            ) : !assocData?.data?.length ? (
+              <div className="bg-white border border-gray-100 rounded-2xl p-12 text-center text-[13px] text-gray-400 font-bold">Nenhum dado para este mês.</div>
+            ) : (
+              <>
+                {/* KPIs resumo */}
+                <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+                  <div className="bg-white border border-gray-100 rounded-2xl p-5 shadow-sm">
+                    <p className="text-[10px] uppercase font-bold text-gray-400 tracking-wider mb-1">Total a pagar</p>
+                    <p className="text-[20px] font-black text-[#111827]">{fmtBRL((assocData.totalAPagar ?? 0) + (assocData.totalPendente ?? 0))}</p>
+                    <p className="text-[11px] text-gray-400 mt-1">{assocData.data.length} associados</p>
+                  </div>
+                  <div className="bg-white border border-gray-100 rounded-2xl p-5 shadow-sm">
+                    <p className="text-[10px] uppercase font-bold text-gray-400 tracking-wider mb-1">Já pago</p>
+                    <p className="text-[20px] font-black text-emerald-600">{fmtBRL(assocData.totalAPagar ?? 0)}</p>
+                  </div>
+                  <div className="bg-white border border-gray-100 rounded-2xl p-5 shadow-sm">
+                    <p className="text-[10px] uppercase font-bold text-gray-400 tracking-wider mb-1">Pendente</p>
+                    <p className="text-[20px] font-black text-amber-600">{fmtBRL(assocData.totalPendente ?? 0)}</p>
+                  </div>
+                </div>
+
+                {/* Tabela de associados */}
+                <div className="bg-white border border-gray-100 rounded-2xl shadow-sm overflow-hidden">
+                  <div className="grid grid-cols-[2fr_80px_1fr_1fr_1fr_32px] gap-4 px-6 py-3 bg-gray-50 border-b border-gray-100">
+                    <span className="text-[10px] uppercase font-bold text-gray-400 tracking-wider">Nome</span>
+                    <span className="text-[10px] uppercase font-bold text-gray-400 tracking-wider">Tipo</span>
+                    <span className="text-[10px] uppercase font-bold text-gray-400 tracking-wider text-right">Pago</span>
+                    <span className="text-[10px] uppercase font-bold text-gray-400 tracking-wider text-right">Pendente</span>
+                    <span className="text-[10px] uppercase font-bold text-gray-400 tracking-wider text-right">Total</span>
+                    <span />
+                  </div>
+                  <div className="divide-y divide-gray-50">
+                    {assocData.data.map((a: any) => {
+                      const key = `${a.tipo}:${a.nome}`;
+                      const isOpen = assocExpanded === key;
+                      const total = a.pago + a.pendente;
+                      return (
+                        <div key={key}>
+                          <button
+                            onClick={() => setAssocExpanded(isOpen ? null : key)}
+                            className="w-full grid grid-cols-[2fr_80px_1fr_1fr_1fr_32px] gap-4 px-6 py-3 hover:bg-gray-50/60 transition-colors text-left items-center"
+                          >
+                            <span className="text-[13px] font-bold text-[#111827]">{a.nome}</span>
+                            <span className={`text-[10px] font-bold px-2 py-0.5 rounded w-fit ${a.tipo === "CLOSER" ? "bg-blue-50 text-blue-600" : "bg-purple-50 text-purple-600"}`}>{a.tipo}</span>
+                            <span className="text-[13px] font-bold text-emerald-600 text-right">{fmtBRL(a.pago)}</span>
+                            <span className="text-[13px] font-bold text-amber-600 text-right">{fmtBRL(a.pendente)}</span>
+                            <span className="text-[13px] font-black text-[#111827] text-right">{fmtBRL(total)}</span>
+                            <span className={`text-gray-400 text-[10px] transition-transform ${isOpen ? "rotate-180" : ""} text-center`}>▾</span>
+                          </button>
+                          {isOpen && a.clientes?.length > 0 && (
+                            <div className="border-t border-gray-50 bg-gray-50/40">
+                              <div className="grid grid-cols-[2fr_80px_1fr_1fr_1fr] gap-4 px-8 py-2 text-[10px] font-bold text-gray-400 uppercase tracking-wider">
+                                <span>Cliente</span><span>Parcela</span><span>Admin.</span><span>Comissão</span><span>Status</span>
+                              </div>
+                              {a.clientes.map((c: any, i: number) => (
+                                <div key={i} className="grid grid-cols-[2fr_80px_1fr_1fr_1fr] gap-4 px-8 py-2 border-t border-gray-100 items-center">
+                                  <span className="text-[12px] font-semibold text-[#111827] truncate">{c.clientName}</span>
+                                  <span className="text-[11px] text-gray-500">P{c.parcelaNumero}/{c.totalParcelas}</span>
+                                  <span className="text-[11px] text-gray-500 truncate">{c.administradora || '—'}</span>
+                                  <span className="text-[12px] font-bold text-[#111827]">{fmtBRL(c.valorComissao)}</span>
+                                  <span className={`text-[10px] font-bold px-2 py-0.5 rounded w-fit ${c.status === "PAGO" ? "bg-emerald-50 text-emerald-600" : c.status === "INADIMPLENTE" ? "bg-red-50 text-red-600" : "bg-amber-50 text-amber-600"}`}>
+                                    {c.status}
+                                  </span>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+        )}
+
       </main>
 
       {/* ── Modal: Contratos do Mês ── */}
@@ -1656,11 +1663,69 @@ export default function VendasPage() {
                   </div>
                 </div>
                 {isExternoCloser && (
-                  <div className="bg-amber-50 border border-amber-200 rounded-xl p-4">
-                    <label className="text-[11px] font-bold text-amber-700 block mb-1.5">Nome do closer externo</label>
-                    <input type="text" value={fCloserExternoNome} onChange={e => setFCloserExternoNome(e.target.value)} placeholder="Ex: Maria Souza" className="w-full px-4 py-3 bg-white border border-amber-200 rounded-xl text-[13px] outline-none text-[#111827]" />
+                  <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 flex flex-col gap-3">
+                    <div className="flex flex-col gap-1.5">
+                      <label className="text-[11px] font-bold text-amber-700">Nome do closer externo</label>
+                      <input type="text" value={fCloserExternoNome} onChange={e => setFCloserExternoNome(e.target.value)} placeholder="Ex: Maria Souza" className="w-full px-4 py-3 bg-white border border-amber-200 rounded-xl text-[13px] outline-none text-[#111827]" />
+                    </div>
+                    <div className="flex flex-col gap-1.5">
+                      <label className="text-[11px] font-bold text-amber-700">Comissão do closer externo (%)</label>
+                      <div className="relative">
+                        <input
+                          type="number" min={0} max={100} step={0.5}
+                          value={fPercentualExterno}
+                          onChange={e => setFPercentualExterno(e.target.value)}
+                          placeholder="Ex: 2"
+                          className="w-full px-4 py-3 pr-10 bg-white border border-amber-200 rounded-xl text-[13px] outline-none text-[#111827]"
+                        />
+                        <span className="absolute right-4 top-1/2 -translate-y-1/2 text-[13px] text-gray-400 font-bold">%</span>
+                      </div>
+                      <p className="text-[10px] text-amber-600">Percentual sobre o valor do crédito pago ao closer externo</p>
+                    </div>
                   </div>
                 )}
+
+                {/* ── Dados do cliente ── */}
+                <div className="border-t border-gray-100 pt-4 flex flex-col gap-3">
+                  <p className="text-[11px] font-bold text-gray-400 uppercase tracking-wider">Dados do cliente <span className="font-normal normal-case">(opcional — para análise)</span></p>
+                  <div className="grid grid-cols-2 gap-5">
+                    <div className="flex flex-col gap-1.5">
+                      <label className="text-[11px] font-bold text-gray-500">Cidade</label>
+                      <input
+                        type="text"
+                        value={fCity}
+                        onChange={e => setFCity(e.target.value)}
+                        placeholder="Ex: São Paulo"
+                        className="w-full px-4 py-3 bg-white border border-gray-200 rounded-xl text-[13px] outline-none focus:ring-2 focus:ring-[#d97706]/20 text-[#111827]"
+                      />
+                    </div>
+                    <div className="flex flex-col gap-1.5">
+                      <label className="text-[11px] font-bold text-gray-500">Estado</label>
+                      <select
+                        value={fEstado}
+                        onChange={e => setFEstado(e.target.value)}
+                        className="w-full px-4 py-3 bg-white border border-gray-200 rounded-xl text-[13px] outline-none focus:ring-2 focus:ring-[#d97706]/20 text-[#111827] appearance-none"
+                      >
+                        <option value="Selecione">Selecione</option>
+                        {UF_LIST.map(uf => <option key={uf} value={uf}>{uf}</option>)}
+                      </select>
+                    </div>
+                  </div>
+                  <div className="flex flex-col gap-1.5">
+                    <label className="text-[11px] font-bold text-gray-500">Estado civil</label>
+                    <div className="flex gap-2 flex-wrap">
+                      {(["Solteiro/a", "Casado/a", "Divorciado/a", "Viúvo/a"] as const).map(op => (
+                        <button
+                          key={op} type="button"
+                          onClick={() => setFCivil(fCivil === op ? "Selecione" : op)}
+                          className={`px-4 py-2 rounded-xl text-[12px] font-semibold border transition-all ${fCivil === op ? "bg-[#1d1d1f] text-white border-[#1d1d1f]" : "bg-white text-gray-500 border-gray-200 hover:border-gray-400"}`}
+                        >
+                          {op}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
                 <div className="bg-gray-50 rounded-xl p-4 flex items-center gap-3 border border-gray-100 cursor-pointer" onClick={() => setIsCampanha(!isCampanha)}>
                   <div className={`w-10 h-6 rounded-full flex items-center p-1 transition-colors ${isCampanha ? "bg-[#d97706]" : "bg-gray-200"}`}>
                     <div className={`w-4 h-4 bg-white rounded-full shadow-sm transform transition-transform ${isCampanha ? "translate-x-4" : "translate-x-0"}`} />
@@ -1674,6 +1739,155 @@ export default function VendasPage() {
                   </button>
                 </div>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Modal Relatório Porto ── */}
+      {portoOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/30 backdrop-blur-sm" onClick={() => setPortoOpen(false)} />
+          <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-[600px] max-h-[90vh] flex flex-col overflow-hidden">
+            {/* Header */}
+            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
+              <div className="flex items-center gap-3">
+                <Upload size={16} className="text-orange-500" />
+                <div>
+                  <p className="text-[15px] font-black text-[#111827]">Relatório Porto Seguro</p>
+                  <p className="text-[11px] text-gray-400">Cole as linhas do relatório mensal · mês: {startDate.substring(0, 7)}</p>
+                </div>
+              </div>
+              <button onClick={() => setPortoOpen(false)} className="p-1.5 text-gray-400 hover:text-gray-600 rounded-lg hover:bg-gray-100 transition-colors">
+                <X size={16} />
+              </button>
+            </div>
+
+            {/* Body */}
+            <div className="flex-1 overflow-y-auto px-6 py-5 space-y-4">
+              {portoResult ? (
+                <div className="space-y-3">
+                  <div className="flex items-center gap-3 bg-emerald-50 border border-emerald-200 rounded-xl p-4">
+                    <CheckCircle size={18} className="text-emerald-600 flex-shrink-0" />
+                    <div>
+                      <p className="text-[13px] font-bold text-emerald-700">
+                        Base atualizada — {portoResult.processadas} apólices ({portoResult.novas} novas)
+                      </p>
+                      {portoReconcileCount !== null && (
+                        <p className="text-[11px] text-emerald-600 mt-0.5">
+                          {portoReconcileCount} parcela{portoReconcileCount !== 1 ? "s" : ""} marcada{portoReconcileCount !== 1 ? "s" : ""} como paga{portoReconcileCount !== 1 ? "s" : ""}
+                        </p>
+                      )}
+                      <p className="text-[11px] text-gray-500 mt-0.5">Projeções Porto atualizadas automaticamente.</p>
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => { setPortoResult(null); setPortoLinhas(""); setPortoPreview(null); setPortoReconcileCount(null); }}
+                    className="text-[12px] text-blue-500 hover:underline"
+                  >
+                    Processar outro mês
+                  </button>
+                </div>
+              ) : (
+                <>
+                  <textarea
+                    value={portoLinhas}
+                    onChange={e => { setPortoLinhas(e.target.value); setPortoPreview(null); setPortoError(""); }}
+                    placeholder={"Cole aqui as linhas do relatório da Porto:\nR$ 1.757,02\t1001690553\t355.535.508-23\tDIEGO FREIRE SANTOS\nR$ 933,33\t1001649179\t..."}
+                    rows={8}
+                    className="w-full bg-gray-50 border border-gray-200 text-gray-700 text-xs font-mono rounded-xl p-3 focus:outline-none focus:ring-2 focus:ring-orange-400/40 resize-y"
+                    autoFocus
+                  />
+
+                  {portoError && (
+                    <div className="flex items-center gap-2 text-red-600 text-[12px] bg-red-50 border border-red-200 rounded-xl p-3">
+                      <AlertTriangle size={14} /> {portoError}
+                    </div>
+                  )}
+
+                  {!portoPreview ? (
+                    <button
+                      onClick={async () => {
+                        setPortoPreviewLoading(true); setPortoPreview(null); setPortoError("");
+                        try {
+                          const r = await fetch("/api/porto/confirmar-mes", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ linhas: portoLinhas }) });
+                          const d = await r.json();
+                          if (!r.ok) throw new Error(d.error || "Erro ao processar");
+                          setPortoPreview(d.rows);
+                        } catch (e: any) { setPortoError(e.message); }
+                        finally { setPortoPreviewLoading(false); }
+                      }}
+                      disabled={!portoLinhas.trim() || portoPreviewLoading}
+                      className="flex items-center gap-2 bg-gray-100 hover:bg-gray-200 disabled:opacity-40 text-gray-700 font-bold px-4 py-2 rounded-xl text-[12px] transition-colors"
+                    >
+                      {portoPreviewLoading && <Loader2 size={13} className="animate-spin" />}
+                      Pré-visualizar
+                    </button>
+                  ) : (
+                    <div className="space-y-3">
+                      <div className="flex items-center justify-between">
+                        <p className="text-[12px] text-gray-600">
+                          <span className="font-bold text-[#111827]">{portoPreview.length}</span> apólices ·{" "}
+                          <span className="font-bold text-blue-600">{portoPreview.filter(r => r.nova).length} novas</span>{" "}
+                          · <span className="text-gray-400">{portoPreview.filter(r => !r.nova).length} já na base</span>
+                        </p>
+                        <button onClick={() => setPortoPreview(null)} className="text-[11px] text-gray-400 hover:text-gray-600">Editar</button>
+                      </div>
+                      <div className="rounded-xl border border-gray-100 overflow-hidden max-h-[220px] overflow-y-auto">
+                        <table className="w-full text-[11px]">
+                          <thead className="sticky top-0 bg-gray-50">
+                            <tr className="text-gray-500 text-left">
+                              <th className="px-3 py-2">Apólice</th>
+                              <th className="px-3 py-2">Nome</th>
+                              <th className="px-3 py-2 text-right">Valor</th>
+                              <th className="px-3 py-2 text-center">Status</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {portoPreview.map((r, i) => (
+                              <tr key={i} className="border-t border-gray-100">
+                                <td className="px-3 py-1.5 font-mono text-gray-600">{r.apolice}</td>
+                                <td className="px-3 py-1.5 text-gray-700">{r.nome || "—"}</td>
+                                <td className="px-3 py-1.5 text-right text-emerald-600 font-semibold">{r.valor.toLocaleString("pt-BR", { style: "currency", currency: "BRL" })}</td>
+                                <td className="px-3 py-1.5 text-center">
+                                  {r.nova
+                                    ? <span className="bg-blue-100 text-blue-600 px-2 py-0.5 rounded text-[10px] font-bold">Nova</span>
+                                    : <span className="bg-gray-100 text-gray-500 px-2 py-0.5 rounded text-[10px]">Existente</span>
+                                  }
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                      <button
+                        onClick={async () => {
+                          setPortoSaveLoading(true); setPortoError("");
+                          const mes = startDate.substring(0, 7);
+                          try {
+                            const [r1, r2] = await Promise.all([
+                              fetch("/api/porto/confirmar-mes", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mes, linhas: portoLinhas }) }),
+                              fetch("/api/comissoes/porto-reconcile", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ cpfs: parsePortoCSV(portoLinhas), mes }) }),
+                            ]);
+                            const [d1, d2] = await Promise.all([r1.json(), r2.json()]);
+                            if (!r1.ok) throw new Error(d1.error || "Erro ao salvar");
+                            setPortoResult(d1);
+                            setPortoReconcileCount(d2.updated ?? 0);
+                            setPortoPreview(null);
+                            fetchSales();
+                          } catch (e: any) { setPortoError(e.message); }
+                          finally { setPortoSaveLoading(false); }
+                        }}
+                        disabled={portoSaveLoading}
+                        className="flex items-center gap-2 bg-orange-500 hover:bg-orange-600 disabled:opacity-50 text-white font-bold px-5 py-2.5 rounded-xl text-[12px] transition-colors"
+                      >
+                        {portoSaveLoading ? <Loader2 size={13} className="animate-spin" /> : <Check size={13} strokeWidth={3} />}
+                        Salvar e confirmar parcelas — {startDate.substring(0, 7)}
+                      </button>
+                    </div>
+                  )}
+                </>
+              )}
             </div>
           </div>
         </div>

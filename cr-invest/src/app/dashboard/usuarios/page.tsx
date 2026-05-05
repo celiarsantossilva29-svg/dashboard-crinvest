@@ -188,9 +188,13 @@ export default function UsuariosPage() {
     password: "",
     permissions: {
       VISAO_EXECUTIVA: { enabled: true, scope: "all" },
+      FINANCEIRO_DASH: { enabled: true, scope: "all" },
+      FINANCEIRO_GASTOS: { enabled: true, scope: "all" },
+      VENDAS: { enabled: true, scope: "all" },
       PERF_SDR: { enabled: true, scope: "all" },
       PERF_CLOSER: { enabled: true, scope: "all" },
       GESTAO_VENDAS: { enabled: true, scope: "all" },
+      TENTATIVAS: { enabled: true, scope: "all" },
       VALIDACAO_VENDA: { enabled: true, scope: "all" },
       CONFIGURACAO: { enabled: true, scope: "all" },
     }
@@ -319,13 +323,17 @@ export default function UsuariosPage() {
     setEditingId(v.id);
     let perms: Record<string, { enabled: boolean; scope: string }> = {
       VISAO_EXECUTIVA: { enabled: true, scope: "all" },
+      FINANCEIRO_DASH: { enabled: true, scope: "all" },
+      FINANCEIRO_GASTOS: { enabled: true, scope: "all" },
+      VENDAS: { enabled: true, scope: "all" },
       PERF_SDR: { enabled: true, scope: "all" },
       PERF_CLOSER: { enabled: true, scope: "all" },
       GESTAO_VENDAS: { enabled: true, scope: "all" },
+      TENTATIVAS: { enabled: true, scope: "all" },
       VALIDACAO_VENDA: { enabled: true, scope: "all" },
       CONFIGURACAO: { enabled: true, scope: "all" },
     };
-    // Backward compat: migrate old DASHBOARD key
+    // Backward compat: migrate old DASHBOARD key or grouped keys
     try {
       if (v.permissions) {
         const parsed = JSON.parse(v.permissions);
@@ -334,6 +342,17 @@ export default function UsuariosPage() {
           parsed.PERF_SDR = parsed.PERF_SDR || parsed.DASHBOARD;
           parsed.PERF_CLOSER = parsed.PERF_CLOSER || parsed.DASHBOARD;
           delete parsed.DASHBOARD;
+        }
+        // Migrate grouped keys to new distinct ones if not set
+        if (parsed.FINANCEIRO) {
+          if (!parsed.FINANCEIRO_DASH) parsed.FINANCEIRO_DASH = parsed.FINANCEIRO;
+          if (!parsed.FINANCEIRO_GASTOS) parsed.FINANCEIRO_GASTOS = parsed.FINANCEIRO;
+        }
+        if (parsed.GESTAO_VENDAS && !parsed.VENDAS) {
+          parsed.VENDAS = parsed.GESTAO_VENDAS;
+        }
+        if (parsed.PERF_SDR && !parsed.TENTATIVAS) {
+          parsed.TENTATIVAS = parsed.PERF_SDR;
         }
         perms = { ...perms, ...parsed };
       }
@@ -374,9 +393,13 @@ export default function UsuariosPage() {
       password: "",
       permissions: {
         VISAO_EXECUTIVA: { enabled: true, scope: "all" },
+        FINANCEIRO_DASH: { enabled: true, scope: "all" },
+        FINANCEIRO_GASTOS: { enabled: true, scope: "all" },
+        VENDAS: { enabled: true, scope: "all" },
         PERF_SDR: { enabled: true, scope: "all" },
         PERF_CLOSER: { enabled: true, scope: "all" },
         GESTAO_VENDAS: { enabled: true, scope: "all" },
+        TENTATIVAS: { enabled: true, scope: "all" },
         VALIDACAO_VENDA: { enabled: true, scope: "all" },
         CONFIGURACAO: { enabled: true, scope: "all" },
       }
@@ -706,12 +729,16 @@ export default function UsuariosPage() {
                   <h3 className="text-[11px] font-bold text-gray-800 mb-4 uppercase tracking-widest">Acessos e Permissões por Aba</h3>
                   <div className="space-y-2">
                     {[
-                      { id: "VISAO_EXECUTIVA", label: "Visão Executiva (Dashboard)" },
+                      { id: "VISAO_EXECUTIVA", label: "Visão Executiva (Dashboard Central)" },
+                      { id: "FINANCEIRO_DASH", label: "Dashboard Financeiro" },
+                      { id: "FINANCEIRO_GASTOS", label: "Gastos" },
+                      { id: "VENDAS", label: "Vendas (Lista)" },
                       { id: "PERF_SDR", label: "Performance SDR" },
                       { id: "PERF_CLOSER", label: "Performance Closer" },
-                      { id: "GESTAO_VENDAS", label: "Gestão de Vendas" },
+                      { id: "GESTAO_VENDAS", label: "Gestão de Vendas (Admin)" },
+                      { id: "TENTATIVAS", label: "Tentativas Contato" },
                       { id: "VALIDACAO_VENDA", label: "Validação de Venda" },
-                      { id: "CONFIGURACAO", label: "Configurações do Sistema" },
+                      { id: "CONFIGURACAO", label: "Configurações" },
                     ].map(perm => (
                       <div key={perm.id} className="flex items-center justify-between p-3 border border-gray-100 rounded-xl hover:bg-gray-50 transition-colors">
                         <div className="flex items-center gap-3">

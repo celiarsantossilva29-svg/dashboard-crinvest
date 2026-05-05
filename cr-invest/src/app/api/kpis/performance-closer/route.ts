@@ -12,12 +12,14 @@ export interface CloserStats {
   agentName: string;
   vendas: number;
   totalReunioes: number;
+  totalReunioes2: number;
+  totalNegociacoes: number;
   receita: number;
   ticketMedio: number;
-  taxaWin: number;             // won / (won + lost) em %
-  reunioesPorVenda: number;    // meetings realizadas / vendas fechadas
-  taxaNoShow: number;          // noShow / scheduled em %
-  leadTimeTotalDias: number;   // avg dias de arrivalAt → closedAt
+  taxaWin: number;
+  reunioesPorVenda: number;
+  taxaNoShow: number;
+  leadTimeTotalDias: number;
 }
 
 export interface DealCard {
@@ -47,6 +49,8 @@ export interface CloserApiResponse {
     taxaWinGeral: number;
     totalWon: number;
     totalReunioes: number;
+    totalReunioes2: number;
+    totalNegociacoes: number;
     noShowGeral: number;
     leadTimeMedioGeral: number;
   };
@@ -148,6 +152,8 @@ function buildMockResult(startDate: Date, endDate: Date): CloserApiResponse {
         agentName: name,
         vendas,
         totalReunioes,
+        totalReunioes2: 0,
+        totalNegociacoes: 0,
         receita: parseFloat(receita.toFixed(2)),
         ticketMedio: parseFloat(ticketMedio.toFixed(2)),
         taxaWin: parseFloat(taxaWin.toFixed(1)),
@@ -201,6 +207,8 @@ function buildMockResult(startDate: Date, endDate: Date): CloserApiResponse {
   const totalVendas   = agents.reduce((s, a) => s + a.vendas, 0);
   const totalReceita  = agents.reduce((s, a) => s + a.receita, 0);
   const totalReunioes = agents.reduce((s, a) => s + a.totalReunioes, 0);
+  const mockTotalReunioes2 = 0;
+  const mockTotalNegociacoes = 0;
   const totalWon = leads.filter((l) => l.status === "won").length;
 
   return {
@@ -215,6 +223,8 @@ function buildMockResult(startDate: Date, endDate: Date): CloserApiResponse {
         totalReunioes > 0 ? parseFloat(((totalVendas / totalReunioes) * 100).toFixed(1)) : 0,
       totalWon,
       totalReunioes,
+      totalReunioes2: mockTotalReunioes2,
+      totalNegociacoes: mockTotalNegociacoes,
       noShowGeral: parseFloat(
         (agents.reduce((s, a) => s + a.taxaNoShow, 0) / Math.max(agents.length, 1)).toFixed(1)
       ),
@@ -255,6 +265,8 @@ async function buildRealResult(startDate: Date, endDate: Date): Promise<CloserAp
         campaignName: true,
         scheduledAt: true,
         meetingAt: true,
+        meeting2At: true,
+        negociacaoAt: true,
         noShow: true,
         noShowAt: true,
         sdrScore: true,
@@ -284,15 +296,18 @@ async function buildRealResult(startDate: Date, endDate: Date): Promise<CloserAp
       const agentSales = salesRows.filter((s) => matchesCloser(s.assignedTo, name));
       const agentLeads = leadsRows.filter((l) => l.assignedTo != null && matchesCloser(l.assignedTo, name));
 
-      // Reuniões realizadas NO PERÍODO:
-      // 1. meetingAt dentro do range (data exata conhecida), OU
-      // 2. closedAt no período com status won/lost (reunião claramente aconteceu, mas meetingAt não preenchido)
-      const meetingLeads = agentLeads.filter((l) => {
-        const meetingInPeriod = l.meetingAt != null && l.meetingAt >= startDate && l.meetingAt <= endDate;
-        const closedInPeriod  = l.closedAt  != null && l.closedAt  >= startDate && l.closedAt  <= endDate
-                                && ["won", "lost"].includes(l.status);
-        return meetingInPeriod || closedInPeriod;
-      });
+      // Reuniões realizadas NO PERÍODO: apenas leads com meetingAt dentro do range
+      const meetingLeads = agentLeads.filter((l) =>
+        l.meetingAt != null && l.meetingAt >= startDate && l.meetingAt <= endDate
+      );
+
+      // 2ª Reunião e Negociação no período
+      const meeting2Leads = agentLeads.filter((l) =>
+        (l as any).meeting2At != null && (l as any).meeting2At >= startDate && (l as any).meeting2At <= endDate
+      );
+      const negociacaoLeads = agentLeads.filter((l) =>
+        (l as any).negociacaoAt != null && (l as any).negociacaoAt >= startDate && (l as any).negociacaoAt <= endDate
+      );
 
       // Agendamentos no período
       const scheduledLeads = agentLeads.filter((l) =>
@@ -302,6 +317,8 @@ async function buildRealResult(startDate: Date, endDate: Date): Promise<CloserAp
       // Fonte de verdade para vendas = tabela Sale
       const vendas           = agentSales.length;
       const totalReunioes    = meetingLeads.length;
+      const totalReunioes2   = meeting2Leads.length;
+      const totalNegociacoes = negociacaoLeads.length;
       const receita          = agentSales.reduce((s, sale) => s + sale.value, 0);
       const ticketMedio      = vendas > 0 ? receita / vendas : 0;
       // Win rate = vendas fechadas no período / reuniões realizadas no período
@@ -331,6 +348,8 @@ async function buildRealResult(startDate: Date, endDate: Date): Promise<CloserAp
         agentName: name,
         vendas,
         totalReunioes,
+        totalReunioes2: (typeof totalReunioes2 !== 'undefined' ? totalReunioes2 : 0),
+        totalNegociacoes: (typeof totalNegociacoes !== 'undefined' ? totalNegociacoes : 0),
         receita: parseFloat(receita.toFixed(2)),
         ticketMedio: parseFloat(ticketMedio.toFixed(2)),
         taxaWin: parseFloat(taxaWin.toFixed(1)),
@@ -379,9 +398,12 @@ async function buildRealResult(startDate: Date, endDate: Date): Promise<CloserAp
     .map(([reason, count]) => ({ reason, count }))
     .sort((a, b) => b.count - a.count);
 
-  const totalVendas    = agents.reduce((s, a) => s + a.vendas, 0);
-  const totalReceita   = agents.reduce((s, a) => s + a.receita, 0);
-  const totalReunioes  = agents.reduce((s, a) => s + a.totalReunioes, 0);
+  // Usa salesRows diretamente para não perder vendas de closers externos ou sem match
+  const totalVendas      = salesRows.length;
+  const totalReceita     = salesRows.reduce((s, r) => s + r.value, 0);
+  const totalReunioes    = agents.reduce((s, a) => s + a.totalReunioes, 0);
+  const totalReunioes2   = agents.reduce((s, a) => s + a.totalReunioes2, 0);
+  const totalNegociacoes = agents.reduce((s, a) => s + a.totalNegociacoes, 0);
   // Totais apenas sobre os leads dos closers cadastrados
   const closerLeads = leadsRows.filter((l) =>
     l.assignedTo != null && agentNames.some((n) => matchesCloser(l.assignedTo!, n))
@@ -402,6 +424,8 @@ async function buildRealResult(startDate: Date, endDate: Date): Promise<CloserAp
         totalReunioes > 0 ? parseFloat(((totalVendas / totalReunioes) * 100).toFixed(1)) : 0,
       totalWon,
       totalReunioes,
+      totalReunioes2: typeof totalReunioes2 !== "undefined" ? totalReunioes2 : 0,
+      totalNegociacoes: typeof totalNegociacoes !== "undefined" ? totalNegociacoes : 0,
       noShowGeral: parseFloat(
         (agents.reduce((s, a) => s + a.taxaNoShow, 0) / Math.max(agents.length, 1)).toFixed(1)
       ),

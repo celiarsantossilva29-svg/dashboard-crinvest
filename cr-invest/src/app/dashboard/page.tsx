@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useCallback } from "react";
+import { useLocalStorage } from "@/hooks/useLocalStorage";
 import { useSession } from "next-auth/react";
 
 // ─── helpers ────────────────────────────────────────────────────────────────
@@ -64,6 +65,21 @@ async function apiFetch<T>(url: string): Promise<T | null> {
   }
 }
 
+function DeltaBadge({ delta }: { delta: number | null }) {
+  if (delta === null) return null;
+  const up = delta >= 0;
+  return (
+    <span style={{
+      fontSize: 11, fontWeight: 700, padding: "2px 7px", borderRadius: 20,
+      background: up ? "#dcfce7" : "#fee2e2",
+      color: up ? "#15803d" : "#b91c1c",
+      display: "inline-flex", alignItems: "center", gap: 2,
+    }}>
+      {up ? "▲" : "▼"} {Math.abs(delta).toFixed(1)}%
+    </span>
+  );
+}
+
 // ─── design tokens ──────────────────────────────────────────────────────────
 
 const LBL_STYLE: React.CSSProperties = {
@@ -83,8 +99,8 @@ export default function DashboardPage() {
   const showTrafico = userRole !== "SDR";
 
   const { start: ds, end: de } = getMonthRange();
-  const [start, setStart] = useState(ds);
-  const [end, setEnd] = useState(de);
+  const [start, setStart] = useLocalStorage("filter:dashboard:start", ds);
+  const [end, setEnd] = useLocalStorage("filter:dashboard:end", de);
 
   const [meta, setMeta] = useState<any>(null);
   const [funil, setFunil] = useState<any>(null);
@@ -98,10 +114,19 @@ export default function DashboardPage() {
   const [editingMeta, setEditingMeta] = useState(false);
   const [metaInput, setMetaInput] = useState<string>("");
   const [savingMeta, setSavingMeta] = useState(false);
+  const [prevSales, setPrevSales] = useState<{ receita: number; count: number; ticket: number } | null>(null);
   const isAdmin = userRole === "admin";
 
+  // Calcula o intervalo do mês anterior ao mês de início selecionado
+  const prevMonthRange = React.useMemo(() => {
+    const d = new Date(start + "T12:00:00");
+    const prevEnd = new Date(d.getFullYear(), d.getMonth(), 0); // último dia do mês anterior
+    const prevStart = new Date(prevEnd.getFullYear(), prevEnd.getMonth(), 1);
+    return { start: fmtDate(prevStart), end: fmtDate(prevEnd) };
+  }, [start]);
+
   const fetchAll = useCallback(async () => {
-    const [m, f, v, p, a, d, c, sSync, sdrData] = await Promise.all([
+    const [m, f, v, p, a, d, c, sSync, sdrData, prevSalesData] = await Promise.all([
       apiFetch<any>("/api/kpis/meta"),
       apiFetch<any>(`/api/kpis/funil?start=${start}&end=${end}`),
       apiFetch<any>(`/api/kpis/vendas?start=${start}&end=${end}`),
@@ -111,10 +136,18 @@ export default function DashboardPage() {
       apiFetch<any>(`/api/kpis/performance-closer?start=${start}&end=${end}`),
       apiFetch<any>("/api/sync/status"),
       apiFetch<any>(`/api/kpis/performance-sdr?start=${start}&end=${end}`),
+      apiFetch<any[]>(`/api/sales?start=${prevMonthRange.start}&end=${prevMonthRange.end}`),
     ]);
     setMeta(m); setFunil(f); setVendas(v); setProspeccao(p);
     setAdSpendInput(a ?? ""); setDiscadores(d); setClosers(c); setSyncStatus(sSync); setSdr(sdrData);
-  }, [start, end]);
+    if (prevSalesData && prevSalesData.length > 0) {
+      const receita = prevSalesData.reduce((s: number, x: any) => s + (x.value ?? 0), 0);
+      const ticket = receita / prevSalesData.length;
+      setPrevSales({ receita, count: prevSalesData.length, ticket });
+    } else {
+      setPrevSales(null);
+    }
+  }, [start, end, prevMonthRange]);
 
   useEffect(() => { fetchAll(); }, [fetchAll]);
 
@@ -209,6 +242,12 @@ export default function DashboardPage() {
   const qtVendas = vendas?.ticketMedio?.value > 0 ? vendas.ticketMedio.value : 1;
   const faltamVendas = Math.ceil(Math.max(0, metaTarget - achieved) / qtVendas);
 
+  const wonAtual = vendas?.taxaConversao?.won ?? 0;
+  const ticketAtual = vendas?.ticketMedio?.value ?? 0;
+  const deltaReceita = prevSales && prevSales.receita > 0 ? ((achieved - prevSales.receita) / prevSales.receita) * 100 : null;
+  const deltaVendas = prevSales && prevSales.count > 0 ? ((wonAtual - prevSales.count) / prevSales.count) * 100 : null;
+  const deltaTicket = prevSales && prevSales.ticket > 0 ? ((ticketAtual - prevSales.ticket) / prevSales.ticket) * 100 : null;
+
   return (
     <>
       <header
@@ -299,6 +338,7 @@ export default function DashboardPage() {
                       <span className="text-[16px] font-bold text-[#1d1d1f]">R$</span>
                       <span className="text-[36px] font-black text-[#1d1d1f] tracking-tight leading-none">{fmtBRL(achieved).replace('R$', '').trim()}</span>
                     </div>
+                    <div className="flex justify-center mt-1"><DeltaBadge delta={deltaReceita} /></div>
                   </div>
                   <div className="px-2">
                     <p className="text-[10px] font-bold text-[#86868b] uppercase tracking-widest mb-2">% da Meta</p>
@@ -327,9 +367,9 @@ export default function DashboardPage() {
 
                 <div className="flex items-center justify-between border-t border-[#f0f0f5] pt-4 pb-2">
                   <div className="flex items-center gap-8 text-[13px]">
-                    <p className="text-[#1d1d1f]">Ticket médio: <span className="font-bold">{fmtBRL(vendas?.ticketMedio?.value ?? 0)}</span></p>
+                    <p className="text-[#1d1d1f] flex items-center gap-2">Ticket médio: <span className="font-bold">{fmtBRL(vendas?.ticketMedio?.value ?? 0)}</span><DeltaBadge delta={deltaTicket} /></p>
                     <div className="w-px h-4 bg-[#e5e5ea]"></div>
-                    <p className="text-[#1d1d1f]">Vendas realizadas: <span className="font-bold">{vendas?.taxaConversao?.won ?? 0}</span></p>
+                    <p className="text-[#1d1d1f] flex items-center gap-2">Vendas realizadas: <span className="font-bold">{vendas?.taxaConversao?.won ?? 0}</span><DeltaBadge delta={deltaVendas} /></p>
                     <div className="w-px h-4 bg-[#e5e5ea]"></div>
                     <p className="text-[#1d1d1f]">Faltam: <span className="font-bold">{faltamVendas} vendas</span></p>
                   </div>
@@ -651,7 +691,7 @@ export default function DashboardPage() {
 
 
           {/* IA vs SDR — Comparativo de Agendamentos */}
-          {funil?.agendamentosPorOrigem && (
+          {sdr?.agendamentosPorOrigem && (
             <div className="bg-white rounded-[12px] shadow-[0_2px_12px_rgba(0,0,0,0.03)] border border-[#e5e5ea] p-6 mb-5">
               <h3 className="font-bold text-[14px] mb-5 text-[#1d1d1f] border-b border-[#f0f0f5] pb-3">
                 Agendamentos — IA vs SDR
@@ -660,7 +700,7 @@ export default function DashboardPage() {
                 {/* IA */}
                 {(["ia", "sdr"] as const).map((key) => {
                   const isIa = key === "ia";
-                  const d = funil.agendamentosPorOrigem[key];
+                  const d = sdr.agendamentosPorOrigem[key];
                   return (
                     <div key={key} className="rounded-[10px] border border-[#e5e5ea] p-4 bg-[#fafafa]">
                       <div className="flex items-center gap-2 mb-4">
@@ -690,15 +730,13 @@ export default function DashboardPage() {
                 })}
               </div>
 
-              {/* Barra comparativa visual — IA vs SDR vs Outros */}
+              {/* Barra comparativa visual — IA vs SDR */}
               {(() => {
-                const ia    = funil.agendamentosPorOrigem.ia.agendamentos;
-                const sdr   = funil.agendamentosPorOrigem.sdr.agendamentos;
-                const other = funil.agendamentosPorOrigem.other?.agendamentos ?? 0;
-                const total = ia + sdr + other;
+                const ia    = sdr.agendamentosPorOrigem.ia.agendamentos;
+                const sdrC  = sdr.agendamentosPorOrigem.sdr.agendamentos;
+                const total = ia + sdrC;
                 const iaPct    = total > 0 ? (ia    / total) * 100 : 0;
-                const sdrPct   = total > 0 ? (sdr   / total) * 100 : 0;
-                const otherPct = total > 0 ? (other / total) * 100 : 0;
+                const sdrPct   = total > 0 ? (sdrC   / total) * 100 : 0;
                 return (
                   <div className="mt-5">
                     <div className="flex justify-between text-[11px] text-[#86868b] mb-1">
@@ -709,13 +747,7 @@ export default function DashboardPage() {
                     <div className="h-2 rounded-full bg-[#f0f0f5] overflow-hidden flex">
                       <div className="h-full bg-[#1d1d1f] transition-all" style={{ width: `${iaPct}%` }} />
                       <div className="h-full bg-[#b49136] transition-all" style={{ width: `${sdrPct}%` }} />
-                      <div className="h-full bg-[#d1d5db] rounded-r-full transition-all" style={{ width: `${otherPct}%` }} />
                     </div>
-                    {other > 0 && (
-                      <p className="text-[10px] text-[#9ca3af] mt-1.5">
-                        + {other} outros (closer / ex-usuários) · {fmtPct(funil.agendamentosPorOrigem.other.taxaNoShow, 1)} no-show
-                      </p>
-                    )}
                   </div>
                 );
               })()}

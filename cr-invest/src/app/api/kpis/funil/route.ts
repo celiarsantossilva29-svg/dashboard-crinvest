@@ -48,14 +48,11 @@ export async function GET(req: NextRequest) {
     const contatados  = leads.filter((l) => l.contactedAt != null || l.qualifiedAt != null || l.scheduledAt != null || l.meetingAt != null || l.status === "won" || ["contacted", "qualified", "scheduled", "meeting"].includes(l.status)).length;
     const qualificados = leads.filter((l) => l.qualifiedAt != null || l.scheduledAt != null || l.meetingAt != null || l.status === "won" || ["qualified", "scheduled", "meeting"].includes(l.status)).length;
     const agendamentos = leads.filter((l) => l.scheduledAt != null || l.meetingAt != null || l.status === "won" || ["scheduled", "meeting"].includes(l.status)).length;
-    // Reuniões realizadas no período:
-    // 1. meetingAt dentro do range, OU
-    // 2. closedAt no período com status won/lost (meetingAt não preenchido mas reunião aconteceu)
+    // Reuniões realizadas — coorte dos agendados no período (scheduledAt no range)
+    // Garante coerência com o número de agendamentos exibido
     const reunioes = leads.filter((l) => {
-      const meetingInPeriod = l.meetingAt != null && l.meetingAt >= startDate && l.meetingAt <= endDate;
-      const closedInPeriod  = l.closedAt  != null && l.closedAt  >= startDate && l.closedAt  <= endDate
-                              && ["won", "lost"].includes(l.status);
-      return meetingInPeriod || closedInPeriod;
+      if (l.scheduledAt == null || l.scheduledAt < startDate || l.scheduledAt > endDate) return false;
+      return l.meetingAt != null || (["won", "lost"].includes(l.status) && l.closedAt != null);
     }).length;
 
     // Vendas: fonte de verdade é a tabela Sale (vendas validadas pelo time).

@@ -1,0 +1,1 @@
+const { PrismaClient } = require('@prisma/client'); const p = new PrismaClient(); async function main() { const s = await p.sale.findMany({select: {clientName: true, closedAt: true, value: true}}); s.sort((a,b) => a.closedAt - b.closedAt); console.dir(s, {depth: null, maxArrayLength: null}); } main().finally(() => p.$disconnect());

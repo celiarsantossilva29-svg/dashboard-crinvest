@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import { useLocalStorage } from "@/hooks/useLocalStorage";
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip as RechartsTooltip, ResponsiveContainer, Cell,
   LineChart, Line, CartesianGrid, Legend, ComposedChart,
@@ -98,8 +99,8 @@ function FunnelBox({ value, target, label, sub, danger }: { value: number; targe
 
 export default function CicloComercialPage() {
   const { start: ds, end: de } = getMonthRange();
-  const [start, setStart] = useState(ds);
-  const [end, setEnd] = useState(de);
+  const [start, setStart] = useLocalStorage("filter:ciclo-comercial:start", ds);
+  const [end, setEnd] = useLocalStorage("filter:ciclo-comercial:end", de);
   const [funilData, setFunilData] = useState<FunilData | null>(null);
   const [vendasData, setVendasData] = useState<VendasData | null>(null);
   const [salesData, setSalesData] = useState<{value: number}[]>([]);

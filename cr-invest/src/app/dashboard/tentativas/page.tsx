@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useMemo } from "react";
+import { useLocalStorage } from "@/hooks/useLocalStorage";
 import { useSession } from "next-auth/react";
 import { Phone, PhoneOff, PhoneMissed, Users, TrendingUp, AlertCircle } from "lucide-react";
 
@@ -100,7 +101,7 @@ function Card({ title, value, sub, icon, color }: {
 
 export default function TentativasPage() {
   const { data: session } = useSession();
-  const [range, setRange] = useState(getMonthRange);
+  const [range, setRange] = useLocalStorage("filter:tentativas:range", getMonthRange());
   const [sdrFilter, setSdrFilter] = useState("");
   const [searchId, setSearchId] = useState("");
   const [sortCol, setSortCol] = useState<"total" | "goto" | "kommo" | "date">("total");

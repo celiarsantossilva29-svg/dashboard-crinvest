@@ -79,6 +79,41 @@ export async function GET(req: NextRequest) {
   }
 }
 
+export async function PATCH(req: NextRequest) {
+  try {
+    const body = await req.json();
+    const { id, action } = body;
+
+    if (!id || action !== "skip-month") {
+      return NextResponse.json({ error: "id e action='skip-month' obrigatórios" }, { status: 400 });
+    }
+
+    if (USE_MOCK) {
+      return NextResponse.json({ success: true, mocked: true });
+    }
+
+    const inst = await prisma.installment.findUnique({ where: { id } });
+    if (!inst) return NextResponse.json({ error: "Parcela não encontrada" }, { status: 404 });
+
+    const cur = inst.dataVencimento;
+    const m = cur.getUTCMonth() + 1;
+    const newDate = new Date(Date.UTC(
+      cur.getUTCFullYear() + Math.floor(m / 12),
+      ((m % 12) + 12) % 12,
+      1
+    ));
+
+    const updated = await prisma.installment.update({
+      where: { id },
+      data: { dataVencimento: newDate },
+    });
+
+    return NextResponse.json({ data: updated });
+  } catch (err: any) {
+    return NextResponse.json({ error: err.message }, { status: 500 });
+  }
+}
+
 export async function PUT(req: NextRequest) {
   try {
      const body = await req.json();

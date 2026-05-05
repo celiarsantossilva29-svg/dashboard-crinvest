@@ -97,6 +97,10 @@ export default function PerformanceSdrPage() {
   const [metaAgendInput, setMetaAgendInput] = useState<string>("");
   const [savingMeta, setSavingMeta] = useState(false);
   const [cadenciaData, setCadenciaData] = useState<any>(null);
+  const [leadsRecentes, setLeadsRecentes] = useState<any>(null);
+  const [leadsRecentesSince, setLeadsRecentesSince] = useState<string>("2026-04-18");
+  const [leadsRecentesUntil, setLeadsRecentesUntil] = useState<string>("");
+  const [showLeadsDetail, setShowLeadsDetail] = useState(false);
   const { data: session } = useSession();
 
   // Scope enforcement
@@ -147,11 +151,11 @@ export default function PerformanceSdrPage() {
   // - Admin com SDR específico selecionado → chave pelo nome do SDR
   // - Admin sem filtro → chave global (aplica para todos que não têm meta individual)
   const metaAgentKey = (() => {
-    if (selectedAgent) return `sdr_meta_pct_${selectedAgent.toLowerCase().replace(/\s+/g, "_")}`;
-    if (!isAdmin && userName) return `sdr_meta_pct_${userName.toLowerCase().replace(/\s+/g, "_")}`;
-    return "sdr_meta_pct_global"; // admin sem filtro = meta padrão do time
+    if (selectedAgent) return `sdr_meta_agend_${selectedAgent.toLowerCase().replace(/\s+/g, "_")}`;
+    if (!isAdmin && userName) return `sdr_meta_agend_${userName.toLowerCase().replace(/\s+/g, "_")}`;
+    return "sdr_meta_agend_global";
   })();
-  const isGlobalMeta = metaAgentKey === "sdr_meta_pct_global";
+  const isGlobalMeta = metaAgentKey === "sdr_meta_agend_global";
 
   // Carrega meta quando o agente selecionado (ou usuário) mudar
   useEffect(() => {
@@ -193,25 +197,53 @@ export default function PerformanceSdrPage() {
   };
 
   const saveMetaGeral = async () => {
-    const goalId = metaGeral?.goal?.id;
-    if (!goalId) return;
     const v = parseFloat(metaGeralInput.replace(/\./g, "").replace(",", ".")) || 0;
+    if (!v) return;
     setSavingMetaGeral(true);
     try {
-      const res = await fetch(`/api/goals?id=${goalId}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ target: v }),
-      });
-      const json = await res.json();
-      if (json.data) {
-        setMetaGeral((prev: any) => ({ ...prev, goal: { ...prev.goal, target: json.data.target } }));
-        setMetaGeralInput("");
+      const goalId = metaGeral?.goal?.id;
+      if (goalId) {
+        const res = await fetch(`/api/goals?id=${goalId}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ target: v }),
+        });
+        const json = await res.json();
+        if (json.data) {
+          setMetaGeral((prev: any) => ({ ...prev, goal: { ...prev.goal, target: json.data.target } }));
+          setMetaGeralInput("");
+        }
+      } else {
+        // Cria nova meta para o ciclo do período selecionado
+        const cycleName = mesLabel(start);
+        const res = await fetch("/api/goals", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ cycleName, startDate: start, endDate: end, target: v }),
+        });
+        const json = await res.json();
+        if (json.data) {
+          setMetaGeralInput("");
+          fetchData();
+        }
       }
     } finally {
       setSavingMetaGeral(false);
     }
   };
+
+  const fetchLeadsRecentes = useCallback(async () => {
+    if (!isInitialized) return;
+    const agentParam = selectedAgent ? `&agent=${encodeURIComponent(selectedAgent)}` : "";
+    const untilParam = leadsRecentesUntil ? `&until=${leadsRecentesUntil}` : "";
+    try {
+      const res = await fetch(`/api/kpis/leads-recentes?since=${leadsRecentesSince}${untilParam}${agentParam}`);
+      const json = await res.json();
+      if (json.data) setLeadsRecentes(json.data);
+    } catch {
+      // não quebra os outros dados
+    }
+  }, [isInitialized, selectedAgent, leadsRecentesSince, leadsRecentesUntil]);
 
   const fetchData = useCallback(async () => {
     if (!isInitialized || !start || !end) return;
@@ -221,7 +253,7 @@ export default function PerformanceSdrPage() {
       const [res, resSales, resMeta, resCadencia] = await Promise.all([
         fetch(`/api/kpis/performance-sdr?start=${start}&end=${end}`),
         fetch(`/api/sales?start=${start}&end=${end}`),
-        fetch("/api/kpis/meta?originSdr=true"),
+        fetch(`/api/kpis/meta?originSdr=true&start=${start}&end=${end}`),
         fetch(`/api/kpis/cadencia?start=${start}&end=${end}${agentParam}`),
       ]);
       const [json, jsonSales, jsonMeta, jsonCadencia] = await Promise.all([
@@ -233,21 +265,27 @@ export default function PerformanceSdrPage() {
       setSales(jsonSales.data || []);
       if (jsonMeta.data) setMetaGeral(jsonMeta.data);
       if (jsonCadencia.data) setCadenciaData(jsonCadencia.data);
-      
+
       // Persist values
       localStorage.setItem("perf-sdr-start", start);
       localStorage.setItem("perf-sdr-end", end);
       localStorage.setItem("perf-sdr-agent", String(selectedAgent));
-    } catch (e: any) { 
-      setError(e.message); 
-      setApiData(null); 
-      setSales([]); 
+    } catch (e: any) {
+      setError(e.message);
+      setApiData(null);
+      setSales([]);
     }
-  }, [start, end, selectedAgent, isInitialized]);
+    // Leads recentes em paralelo, sem bloquear os KPIs principais
+    fetchLeadsRecentes();
+  }, [start, end, selectedAgent, isInitialized, fetchLeadsRecentes]);
 
   useEffect(() => {
     if (isInitialized) fetchData();
   }, [fetchData, isInitialized]);
+
+  useEffect(() => {
+    if (isInitialized) fetchLeadsRecentes();
+  }, [fetchLeadsRecentes, isInitialized]);
 
   // Auto-refresh a cada 5 minutos
   useEffect(() => {
@@ -276,6 +314,9 @@ export default function PerformanceSdrPage() {
   const totalAgendamentos = !selectedAgent
     ? (apiData?.agendamentosPorOrigem?.total ?? sdrAgend)
     : sdrAgend;
+  const totalReagendados = displayed.reduce((s: number, r: any) => s + (r.reagendados || 0), 0);
+  // Denominador correto para % realizadas e no-show: agendamentos + reagendamentos
+  const totalSlots = totalAgendamentos + totalReagendados;
 
 
   return (
@@ -334,149 +375,135 @@ export default function PerformanceSdrPage() {
         {/* ── METAS ───────────────────────────────────────────────────────── */}
         <div className="flex gap-4 mb-6">
 
-          {/* Meta Individual */}
-          <div className="flex-1 bg-white rounded-xl border border-[#e5e5ea] shadow-sm p-5">
-            <div className="flex items-center justify-between mb-3">
-              <h3 className="text-[12px] font-bold text-[#1d1d1f] uppercase tracking-wide">
-                {isGlobalMeta ? "Meta Padrão · Todos os SDRs" : "Meta Individual · Agend."}
-              </h3>
-              <span className="text-[10px] text-[#86868b]">{mesLabel(start)}</span>
-            </div>
-            {(() => {
-              // Encontra stats do agente visualizado (filtro selecionado ou usuário logado)
-              const agentName = selectedAgent ?? userName;
-              const myStats = agentName
-                ? stats.find((r: any) => {
-                    const n = agentName.toLowerCase();
-                    const a = (r.agentName ?? "").toLowerCase();
-                    return a.startsWith(n) || n.startsWith(a.split(" ")[0]);
-                  })
-                : null;
+          {/* Meta de Agendamento (% de conversão sobre leads) */}
+          {(() => {
+            const leadsRecebidos = totais?.leadsGerados ?? 0;
+            const realizado = totalAgendamentos;
+            const metaPct = metaAgend > 0 ? metaAgend : 0;
+            const metaEsperado = metaPct > 0 && leadsRecebidos > 0
+              ? Math.round(leadsRecebidos * metaPct / 100)
+              : 0;
+            const pctAtingido = metaEsperado > 0 ? Math.min(100, Math.round((realizado / metaEsperado) * 100)) : 0;
+            const barColor = pctAtingido >= 100 ? "#16a34a" : "#b49136";
+            
+            return (
+              <div className="flex-1 bg-white rounded-xl border border-[#e5e5ea] shadow-sm p-5 flex flex-col">
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="text-[11px] font-bold text-[#1d1d1f] uppercase tracking-wider">
+                    {isGlobalMeta ? "Meta Padrão - Todos os SDRs" : "Meta Individual - Agend."}
+                  </h3>
+                  <span className="text-[10px] text-[#86868b]">{mesLabel(start)}</span>
+                </div>
 
-              // Para a meta: soma agendamentos do SDR + agendamentos da IA nos leads deste SDR
-              const agendSdr = myStats?.agendamentos ?? sdrAgend;
-              const agendIa  = myStats?.agendamentosIa ?? 0;
-              const realizado = agendSdr + agendIa; // usado só na meta
-
-              const leadsRecebidos = myStats?.leadsGerados ?? totais?.leadsGerados ?? 0;
-              const metaEsperado = metaAgend > 0 ? Math.round(leadsRecebidos * metaAgend / 100) : 0;
-              const pctAtingido = metaEsperado > 0 ? Math.min(100, Math.round((realizado / metaEsperado) * 100)) : 0;
-              const color = pctAtingido >= 100 ? "#16a34a" : pctAtingido >= 60 ? "#d97706" : "#dc2626";
-              return (
-                <div className="mb-4">
-                  {/* Linha principal: agendamentos feitos vs esperados */}
-                  <div className="flex justify-between items-baseline mb-2">
-                    <div>
-                      <span className="text-[24px] font-black text-[#1d1d1f] leading-none">{realizado}</span>
-                      <span className="text-[12px] text-[#86868b] ml-1">agend.</span>
-                    </div>
-                    <span className="text-[12px] text-[#86868b]">
-                      esperado <strong className="text-[#1d1d1f]">{metaEsperado > 0 ? metaEsperado : "—"}</strong>
-                    </span>
+                <div className="flex items-end justify-between mb-2">
+                  <div>
+                    <span className="text-[32px] font-black text-[#1d1d1f] leading-none">{realizado}</span>
+                    <span className="text-[12px] font-bold text-[#86868b] ml-2">agend.</span>
                   </div>
-                  {/* Barra de progresso */}
-                  <div className="w-full h-2 bg-[#f0f0f5] rounded-full overflow-hidden">
-                    <div className="h-full rounded-full transition-all duration-700" style={{ width: `${pctAtingido}%`, background: color }} />
-                  </div>
-                  <div className="flex justify-between mt-1 text-[10px]">
-                    <span style={{ color }}>{pctAtingido}% da meta</span>
-                    {metaEsperado > 0 && realizado < metaEsperado && (
-                      <span className="text-[#86868b]">faltam {metaEsperado - realizado}</span>
-                    )}
-                  </div>
-                  {/* Info secundária */}
-                  <div className="flex gap-3 mt-2 pt-2 border-t border-[#f0f0f5] text-[10px] text-[#86868b]">
-                    <span>{leadsRecebidos} leads recebidos</span>
-                    <span>·</span>
-                    {agendIa > 0 && <><span>{agendSdr} SDR + {agendIa} IA</span><span>·</span></>}
-                    <span>meta: {metaAgend > 0 ? `${metaAgend}% de conv.` : "não definida"}</span>
+                  <div className="text-[11px] text-[#86868b] font-medium pb-1">
+                    esperado <strong className="text-[#1d1d1f]">{metaEsperado > 0 ? metaEsperado : "—"}</strong>
                   </div>
                 </div>
-              );
-            })()}
-            <div className="flex items-center gap-2 border-t border-[#f0f0f5] pt-3">
-              <div className="relative flex-1">
-                <input
-                  type="number" min={0} max={100} value={metaAgendInput}
-                  onChange={e => setMetaAgendInput(e.target.value)}
-                  placeholder={isGlobalMeta ? "meta % para todos (ex: 40)" : "meta % (ex: 40)"}
-                  className="w-full border border-[#e5e5ea] rounded-lg pl-3 pr-7 py-1.5 text-[12px] text-[#1d1d1f] focus:outline-none focus:ring-2 focus:ring-[#b49136]"
-                />
-                <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[12px] text-[#86868b] pointer-events-none">%</span>
+
+                <div className="w-full h-2 bg-[#f0f0f5] rounded-full overflow-hidden mb-2">
+                  <div className="h-full rounded-full transition-all duration-700" style={{ width: `${pctAtingido}%`, backgroundColor: barColor }} />
+                </div>
+
+                <div className="flex justify-between text-[10px] mb-4">
+                  <span className="font-bold" style={{ color: barColor }}>{pctAtingido}% da meta</span>
+                  <span className="text-[#86868b]">faltam {metaEsperado > realizado ? metaEsperado - realizado : 0}</span>
+                </div>
+
+                <div className="text-[11px] text-[#86868b] mb-4">
+                  {leadsRecebidos} leads recebidos <span className="mx-1">•</span> meta: {metaPct}% de conv.
+                </div>
+
+                <div className="mt-auto flex items-center gap-2 border-t border-[#f0f0f5] pt-4">
+                  <div className="relative flex-1">
+                    <input
+                      type="number" min={0} max={100} value={metaAgendInput}
+                      onChange={e => setMetaAgendInput(e.target.value)}
+                      placeholder={metaPct > 0 ? `${metaPct}% atual` : ""}
+                      className="w-full border border-[#e5e5ea] rounded-md pl-3 pr-6 py-1.5 text-[12px] text-[#1d1d1f] focus:outline-none focus:ring-1 focus:ring-[#1d1d1f]"
+                    />
+                    <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[12px] font-bold text-[#86868b] pointer-events-none">%</span>
+                  </div>
+                  <button onClick={saveMeta} disabled={savingMeta || !metaAgendInput}
+                    className="px-4 py-1.5 rounded-md text-[11px] font-bold text-white bg-[#1d1d1f] hover:bg-[#333] transition-colors disabled:opacity-50">
+                    {savingMeta ? "..." : "Salvar"}
+                  </button>
+                </div>
               </div>
-              <button onClick={saveMeta} disabled={savingMeta || !metaAgendInput}
-                className="px-3 py-1.5 rounded-lg text-[11px] font-semibold text-white bg-[#1d1d1f] hover:bg-[#333] transition-colors disabled:opacity-50">
-                {savingMeta ? "..." : "Salvar"}
-              </button>
-            </div>
-          </div>
+            );
+          })()}
 
           {/* Meta Geral */}
-          <div className="flex-1 bg-white rounded-xl border border-[#e5e5ea] shadow-sm p-5">
-            <div className="flex items-center justify-between mb-3">
-              <h3 className="text-[12px] font-bold text-[#1d1d1f] uppercase tracking-wide">Meta Geral · Originadas via SDR</h3>
-              <span className="text-[10px] text-[#86868b]">{metaGeral?.goal?.cycleName ?? "—"}</span>
-            </div>
-            {metaGeral ? (() => {
-              const target = metaGeral.goal?.target ?? 0;
-              const achieved = metaGeral.achieved ?? 0;
-              const pct = target > 0 ? Math.min(100, Math.round((achieved / target) * 100)) : 0;
-              const color = pct >= 100 ? "#16a34a" : pct >= 60 ? "#d97706" : "#dc2626";
-              const fmtM = (v: number) => v >= 1_000_000
-                ? `R$ ${(v/1_000_000).toFixed(2).replace(".", ",")}M`
-                : new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL", maximumFractionDigits: 0 }).format(v);
-              return (
-                <>
-                  <div className="flex justify-between items-baseline mb-2">
-                    <span className="text-[24px] font-black text-[#1d1d1f] leading-none">{fmtM(achieved)}</span>
-                    <span className="text-[12px] text-[#86868b]">meta <strong className="text-[#1d1d1f]">{fmtM(target)}</strong></span>
+          {(() => {
+            const target = metaGeral?.goal?.target ?? 0;
+            const achieved = metaGeral?.achieved ?? 0;
+            const pct = target > 0 ? Math.min(100, Math.round((achieved / target) * 100)) : 0;
+            const barColor = pct >= 100 ? "#16a34a" : "#b49136";
+            const fmtM = (v: number) => v >= 1_000_000
+              ? `R$ ${(v/1_000_000).toFixed(2).replace(".", ",")}M`
+              : new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL", maximumFractionDigits: 0 }).format(v);
+            
+            return (
+              <div className="flex-1 bg-white rounded-xl border border-[#e5e5ea] shadow-sm p-5 flex flex-col">
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="text-[11px] font-bold text-[#1d1d1f] uppercase tracking-wider">Meta Geral - Originadas via SDR</h3>
+                  <span className="text-[10px] text-[#86868b]">{metaGeral?.goal?.cycleName ?? mesLabel(start)}</span>
+                </div>
+
+                <div className="flex items-end justify-between mb-2">
+                  <p className="text-[32px] font-black text-[#1d1d1f] leading-none">
+                    {achieved > 0 ? fmtM(achieved) : "—"}
+                  </p>
+                  <div className="text-[11px] text-[#86868b] font-medium pb-1">
+                    meta <strong className="text-[#1d1d1f]">{target > 0 ? fmtM(target) : "—"}</strong>
                   </div>
-                  <div className="w-full h-2 bg-[#f0f0f5] rounded-full overflow-hidden mb-1">
-                    <div className="h-full rounded-full transition-all duration-700" style={{ width: `${pct}%`, background: color }} />
+                </div>
+
+                <div className="w-full h-2 bg-[#f0f0f5] rounded-full overflow-hidden mb-2">
+                  <div className="h-full rounded-full transition-all duration-700" style={{ width: `${pct}%`, backgroundColor: barColor }} />
+                </div>
+
+                <div className="flex justify-between text-[10px] mb-4">
+                  <span className="font-bold" style={{ color: barColor }}>{pct}% da meta</span>
+                  <span className="text-[#86868b]">faltam {target > achieved ? fmtM(target - achieved) : "—"}</span>
+                </div>
+
+                <div className="grid grid-cols-3 gap-4 mb-4 text-center mt-2">
+                  <div>
+                    <p className="text-[9px] font-bold text-[#86868b] uppercase tracking-widest mb-1.5">Vendas</p>
+                    <p className="text-[14px] font-black text-[#1d1d1f]">{metaGeral?.wonCount ?? 0}</p>
                   </div>
-                  <div className="flex justify-between text-[10px] mb-3">
-                    <span style={{ color }}>{pct}% da meta</span>
-                    {achieved < target && <span className="text-[#86868b]">faltam {fmtM(target - achieved)}</span>}
+                  <div>
+                    <p className="text-[9px] font-bold text-[#86868b] uppercase tracking-widest mb-1.5">Ticket Médio</p>
+                    <p className="text-[14px] font-black text-[#1d1d1f]">{metaGeral?.wonCount > 0 ? fmtM(achieved / metaGeral.wonCount) : "—"}</p>
                   </div>
-                  <div className="grid grid-cols-3 gap-2 border-t border-[#f0f0f5] pt-3 mb-3">
-                    <div className="text-center">
-                      <p className="text-[9px] text-[#86868b] uppercase tracking-wide mb-0.5">Vendas</p>
-                      <p className="text-[14px] font-bold text-[#1d1d1f]">{metaGeral.wonCount ?? 0}</p>
-                    </div>
-                    <div className="text-center">
-                      <p className="text-[9px] text-[#86868b] uppercase tracking-wide mb-0.5">Ticket Médio</p>
-                      <p className="text-[14px] font-bold text-[#1d1d1f]">{metaGeral.wonCount > 0 ? fmtM(achieved / metaGeral.wonCount) : "—"}</p>
-                    </div>
-                    <div className="text-center">
-                      <p className="text-[9px] text-[#86868b] uppercase tracking-wide mb-0.5">Dias Rest.</p>
-                      <p className="text-[14px] font-bold text-[#1d1d1f]">{metaGeral.daysLeft ?? 0}</p>
-                    </div>
+                  <div>
+                    <p className="text-[9px] font-bold text-[#86868b] uppercase tracking-widest mb-1.5">Dias Rest.</p>
+                    <p className="text-[14px] font-black text-[#1d1d1f]">{metaGeral?.daysLeft ?? 0}</p>
                   </div>
-                  {isAdmin && (
-                    <div className="flex items-center gap-2 border-t border-[#f0f0f5] pt-3">
-                      <input
-                        type="number" min={0} value={metaGeralInput}
-                        onChange={e => setMetaGeralInput(e.target.value)}
-                        placeholder="nova meta (R$)..."
-                        className="flex-1 border border-[#e5e5ea] rounded-lg px-3 py-1.5 text-[12px] text-[#1d1d1f] focus:outline-none focus:ring-2 focus:ring-[#b49136]"
-                      />
-                      <button onClick={saveMetaGeral} disabled={savingMetaGeral || !metaGeralInput}
-                        className="px-3 py-1.5 rounded-lg text-[11px] font-semibold text-white bg-[#1d1d1f] hover:bg-[#333] transition-colors disabled:opacity-50">
-                        {savingMetaGeral ? "..." : "Salvar"}
-                      </button>
-                    </div>
-                  )}
-                </>
-              );
-            })() : (
-              <>
-                <p className="text-[12px] text-[#86868b] mb-3">Nenhuma meta configurada.</p>
+                </div>
+
                 {isAdmin && (
-                  <p className="text-[11px] text-[#86868b]">Crie uma meta em Configurações para editar aqui.</p>
+                  <div className="mt-auto flex items-center gap-2 border-t border-[#f0f0f5] pt-4">
+                    <input
+                      type="text" value={metaGeralInput}
+                      onChange={e => setMetaGeralInput(e.target.value)}
+                      placeholder="nova meta (R$)..."
+                      className="flex-1 border border-[#e5e5ea] rounded-md px-3 py-1.5 text-[12px] text-[#1d1d1f] focus:outline-none focus:ring-1 focus:ring-[#1d1d1f]"
+                    />
+                    <button onClick={saveMetaGeral} disabled={savingMetaGeral || !metaGeralInput}
+                      className="px-4 py-1.5 rounded-md text-[11px] font-bold text-white bg-[#86868b] hover:bg-[#1d1d1f] transition-colors disabled:opacity-50">
+                      {savingMetaGeral ? "..." : "Salvar"}
+                    </button>
+                  </div>
                 )}
-              </>
-            )}
-          </div>
+              </div>
+            );
+          })()}
 
         </div>
 
@@ -512,22 +539,28 @@ export default function PerformanceSdrPage() {
               <p className="text-[11px] font-semibold text-[#86868b] uppercase tracking-widest mb-3">Reuniões</p>
               <p className="text-[32px] font-black leading-none text-[#10B981] tracking-tight">{displayed.reduce((s: any, r: any) => s + (r.reunioes || 0), 0)}</p>
               <p className="text-[12px] text-[#86868b] mt-2">
-                {totalAgendamentos > 0
-                  ? ((displayed.reduce((s: any, r: any) => s + (r.reunioes || 0), 0) / totalAgendamentos) * 100).toFixed(1)
+                {totalSlots > 0
+                  ? ((displayed.reduce((s: any, r: any) => s + (r.reunioes || 0), 0) / totalSlots) * 100).toFixed(1)
                   : "0"}% realizadas
               </p>
             </div>
 
             <div className="flex-1 p-6">
-              <p className="text-[11px] font-semibold text-[#DC2626] uppercase tracking-widest mb-3">Tarefas Atrasadas</p>
-              <p className="text-[32px] font-black leading-none text-[#DC2626] tracking-tight">{totais?.tarefasVencidas ?? 0}</p>
-              <p className="text-[12px] text-[#DC2626]/60 mt-2">nextTask vencida</p>
-            </div>
-
-            <div className="flex-1 p-6">
-              <p className="text-[11px] font-semibold text-[#86868b] uppercase tracking-widest mb-3">Recuperação</p>
-              <p className="text-[32px] font-black leading-none text-[#7C3AED] tracking-tight">{totais?.recuperacao ?? 0}</p>
-              <p className="text-[12px] text-[#86868b] mt-2">ex-perdidos ativos</p>
+              <p className="text-[11px] font-semibold text-[#86868b] uppercase tracking-widest mb-3">No-Show</p>
+              {(() => {
+                const ia = apiData?.agendamentosPorOrigem?.ia ?? { agendamentos: 0, noShows: 0 };
+                const sdr = apiData?.agendamentosPorOrigem?.sdr ?? { agendamentos: 0, noShows: 0 };
+                const totalAgend = ia.agendamentos + sdr.agendamentos;
+                const totalNs = ia.noShows + sdr.noShows;
+                const taxa = totalAgend > 0 ? (totalNs / totalAgend) * 100 : 0;
+                const colorClass = taxa > 35 ? "text-[#DC2626]" : "text-[#16A34A]";
+                return (
+                  <>
+                    <p className={`text-[32px] font-black leading-none tracking-tight ${colorClass}`}>{taxa.toFixed(1)}%</p>
+                    <p className="text-[12px] text-[#86868b] mt-2">reuniões com ausência</p>
+                  </>
+                );
+              })()}
             </div>
 
           </div>
@@ -540,9 +573,8 @@ export default function PerformanceSdrPage() {
 
             {(() => {
               const ia    = apiData.agendamentosPorOrigem.ia ?? { agendamentos: 0, noShows: 0, taxaNoShow: 0 };
-              const other = apiData.agendamentosPorOrigem.other ?? { agendamentos: 0, noShows: 0, taxaNoShow: 0 };
               const sdrStats: any[] = stats;
-              const cols = 1 + sdrStats.length + (other.agendamentos > 0 ? 1 : 0);
+              const cols = 1 + sdrStats.length;
               const gridCols = cols <= 2 ? "grid-cols-2" : cols === 3 ? "grid-cols-3" : "grid-cols-4";
 
               const PanelCard = ({ label, avatar, bg, agendamentos, noShows, taxaNoShow, highlight, conversao, taxaRetorno, score }: any) => {
@@ -587,21 +619,21 @@ export default function PerformanceSdrPage() {
                 );
               };
 
-              const totalAgend = apiData.agendamentosPorOrigem.total ?? (ia.agendamentos + sdrStats.reduce((s: number, r: any) => s + (r.agendamentos || 0), 0) + other.agendamentos);
+              const totalAgend = apiData.agendamentosPorOrigem.total ?? (ia.agendamentos + sdrStats.reduce((s: number, r: any) => s + (r.agendamentos || 0), 0));
 
               return (
                 <>
                   <div className={`grid ${gridCols} gap-4 mb-5`}>
                     <PanelCard label="IA (Automático)" avatar="IA" bg="bg-[#1d1d1f]" agendamentos={ia.agendamentos} noShows={ia.noShows} taxaNoShow={ia.taxaNoShow} highlight={false} />
                     {sdrStats.map((sdr: any) => {
-                      const conv = sdr.leadsGerados > 0 ? (sdr.agendamentos / sdr.leadsGerados) * 100 : null;
+                      const conv = (totais?.leadsGerados ?? 0) > 0 ? (sdr.agendamentos / totais!.leadsGerados) * 100 : null;
                       return (
                         <PanelCard
                           key={sdr.agentName}
                           label={sdr.agentName}
                           avatar={sdr.agentName.charAt(0).toUpperCase()}
                           bg="bg-[#b49136]"
-                          agendamentos={sdr.agendamentos}
+                          agendamentos={sdr.agendamentosProprios ?? sdr.agendamentos}
                           noShows={sdr.noShowsNoPeriodo ?? 0}
                           taxaNoShow={sdr.taxaNoShow ?? 0}
                           highlight={selectedAgent === sdr.agentName}
@@ -611,25 +643,21 @@ export default function PerformanceSdrPage() {
                         />
                       );
                     })}
-                    {other.agendamentos > 0 && (
-                      <PanelCard label="Outros" avatar="?" bg="bg-[#9ca3af]" agendamentos={other.agendamentos} noShows={other.noShows} taxaNoShow={other.taxaNoShow} highlight={false} />
-                    )}
+
                   </div>
                   {totalAgend > 0 && (
                     <div>
                       <div className="flex justify-between text-[10px] text-[#86868b] mb-1">
                         <span>IA {((ia.agendamentos / totalAgend) * 100).toFixed(0)}%</span>
                         <span className="font-semibold text-[#1d1d1f]">{totalAgend} total</span>
-                        <span>SDR {((sdrStats.reduce((s: number, r: any) => s + (r.agendamentos || 0), 0) / totalAgend) * 100).toFixed(0)}%</span>
+                        <span>SDR {((sdrStats.reduce((s: number, r: any) => s + (r.agendamentosProprios ?? r.agendamentos ?? 0), 0) / totalAgend) * 100).toFixed(0)}%</span>
                       </div>
                       <div className="h-2 rounded-full bg-[#f0f0f5] overflow-hidden flex">
                         <div className="h-full bg-[#1d1d1f]" style={{ width: `${(ia.agendamentos / totalAgend) * 100}%` }} />
                         {sdrStats.map((sdr: any, i: number) => (
-                          <div key={sdr.agentName} className="h-full bg-[#b49136]" style={{ width: `${((sdr.agendamentos || 0) / totalAgend) * 100}%`, opacity: 1 - i * 0.25 }} />
+                          <div key={sdr.agentName} className="h-full bg-[#b49136]" style={{ width: `${((sdr.agendamentosProprios ?? sdr.agendamentos ?? 0) / totalAgend) * 100}%`, opacity: 1 - i * 0.25 }} />
                         ))}
-                        {other.agendamentos > 0 && (
-                          <div className="h-full bg-[#d1d5db] rounded-r-full" style={{ width: `${(other.agendamentos / totalAgend) * 100}%` }} />
-                        )}
+
                       </div>
                     </div>
                   )}
@@ -671,9 +699,8 @@ export default function PerformanceSdrPage() {
             <div className="flex-1 p-6 flex flex-col justify-center">
               <p className="text-[11px] font-semibold text-[#86868b] uppercase tracking-widest mb-3">No-Show</p>
               {(() => {
-                const totalAgend = displayed.reduce((s: any, r: any) => s + (r.agendamentos || 0), 0);
                 const totalNoShows = displayed.reduce((s: any, r: any) => s + (r.noShowsNoPeriodo || 0), 0);
-                const val = totalAgend > 0 ? parseFloat(((totalNoShows / totalAgend) * 100).toFixed(1)) : 0;
+                const val = totalSlots > 0 ? parseFloat(((totalNoShows / totalSlots) * 100).toFixed(1)) : 0;
                 return (
                   <p className={`text-[32px] font-black leading-none tracking-tight ${val <= 35 ? "text-[#16A34A]" : "text-[#DC2626]"}`}>
                     {val}%
@@ -1010,6 +1037,272 @@ export default function PerformanceSdrPage() {
           </div>
         </div>
 
+        {/* ── RAIO-X LEADS RECENTES ────────────────────────────────────────── */}
+        <div className="mt-8 mb-8">
+          <div className="flex items-center justify-between mb-2">
+            <div>
+              <h2 className="text-[11px] font-semibold text-[#86868b] uppercase tracking-wider">
+                Raio-X · Leads Recentes por Administradora
+              </h2>
+              <p className="text-[10px] text-[#a1a1aa] mt-0.5 max-w-lg">
+                <span className="font-medium text-[#71717a]">Análise de Safra:</span> Exibe a jornada exclusiva dos leads que <strong className="font-medium">chegaram</strong> no período filtrado. (Ex: se um lead chegou no período, mas a reunião ocorreu fora dele, ele conta aqui. Se a reunião ocorreu no período, mas o lead chegou antes, ele <strong className="font-medium">não</strong> conta aqui).
+              </p>
+            </div>
+            <div className="flex items-center gap-2 border border-[#e5e5ea] rounded-md bg-white overflow-hidden text-[12px]">
+              <span className="text-[#86868b] pl-2 bg-[#f0f0f5]">desde</span>
+              <input
+                type="date"
+                value={leadsRecentesSince}
+                onChange={(e) => setLeadsRecentesSince(e.target.value)}
+                className="px-2 py-1 bg-white text-[#1d1d1f] outline-none"
+              />
+              <span className="text-[#86868b] px-2 bg-[#f0f0f5]">até</span>
+              <input
+                type="date"
+                value={leadsRecentesUntil}
+                onChange={(e) => setLeadsRecentesUntil(e.target.value)}
+                className="px-2 py-1 bg-white text-[#1d1d1f] outline-none"
+              />
+            </div>
+            <button
+              onClick={fetchLeadsRecentes}
+              className="px-3 py-1.5 rounded-md text-[11px] font-bold bg-[#1d1d1f] text-white hover:bg-[#333] transition-colors ml-2"
+            >
+              Filtrar
+            </button>
+          </div>
+
+          {leadsRecentes && (
+            <div className="space-y-4">
+              {/* Funil resumo — barra visual de conversão */}
+              {(() => {
+                const sinceLabel = new Date(leadsRecentesSince + "T12:00:00").toLocaleDateString("pt-BR", { day: "2-digit", month: "short" });
+                const t = leadsRecentes.total || 1; // evita divisão por zero
+                const steps = [
+                  { label: "Chegaram", value: leadsRecentes.total, color: "#1d1d1f", pct: 100 },
+                  { label: "Ligação", value: leadsRecentes.comLigacao, color: "#2563EB", pct: leadsRecentes.total > 0 ? Math.round((leadsRecentes.comLigacao / t) * 100) : 0 },
+                  { label: "Agendados", value: leadsRecentes.agendados, color: "#b49136", pct: leadsRecentes.total > 0 ? Math.round((leadsRecentes.agendados / t) * 100) : 0 },
+                  { label: "Reunião", value: leadsRecentes.reuniao, color: "#10B981", pct: leadsRecentes.agendados > 0 ? Math.round((leadsRecentes.reuniao / leadsRecentes.agendados) * 100) : 0 },
+                  { label: "No-Show", value: leadsRecentes.noShows, color: "#DC2626", pct: leadsRecentes.agendados > 0 ? Math.round((leadsRecentes.noShows / leadsRecentes.agendados) * 100) : 0 },
+                  { label: "Vendas", value: leadsRecentes.vendas, color: "#D946EF", pct: leadsRecentes.reuniao > 0 ? Math.round((leadsRecentes.vendas / leadsRecentes.reuniao) * 100) : 0 },
+                ];
+                return (
+                  <div className="bg-white rounded-xl border border-[#e5e5ea] shadow-sm p-5">
+                    <div className="flex items-center justify-between mb-4">
+                      <p className="text-[11px] font-semibold text-[#1d1d1f]">Funil desde {sinceLabel}</p>
+                      <div className="flex gap-2 text-[10px] text-[#86868b]">
+                        <span className="text-[#7C3AED] font-semibold">
+                          {leadsRecentes.recuperacao} recuperação ({Math.round((leadsRecentes.recuperacao / t) * 100)}%)
+                        </span>
+                        <span>·</span>
+                        <span className="text-[#DC2626] font-semibold">
+                          {leadsRecentes.perdidos} perdidos ({Math.round((leadsRecentes.perdidos / t) * 100)}%)
+                        </span>
+                      </div>
+                    </div>
+                    <div className="flex items-end gap-3">
+                      {steps.map((s, i) => (
+                        <React.Fragment key={s.label}>
+                          <div className="flex-1 flex flex-col items-center gap-1.5">
+                            <p className="text-[18px] font-black leading-none" style={{ color: s.color }}>{s.value}</p>
+                            <div className="w-full h-2 bg-[#f0f0f5] rounded-full overflow-hidden">
+                              <div className="h-full rounded-full transition-all duration-500" style={{ width: `${s.pct}%`, background: s.color }} />
+                            </div>
+                            <p className="text-[10px] font-semibold text-[#86868b]">{s.label}</p>
+                            <p className="text-[9px] text-[#9ca3af]">
+                              {s.label === "Vendas" ? `${s.pct}% das reun.` : s.label === "No-Show" || s.label === "Reunião" ? `${s.pct}% dos agend.` : `${s.pct}% chegaram`}
+                            </p>
+                          </div>
+                          {i < steps.length - 1 && (
+                            <div className="text-[#d1d5db] text-[12px] mb-6">›</div>
+                          )}
+                        </React.Fragment>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {/* Tabela por administradora */}
+              {Object.keys(leadsRecentes.byTag).length > 0 && (
+                <div className="bg-white rounded-xl border border-[#e5e5ea] shadow-sm overflow-hidden">
+                  <div className="px-5 py-3 border-b border-[#f0f0f5] flex items-center justify-between">
+                    <p className="text-[11px] font-semibold text-[#86868b] uppercase tracking-widest">Por Administradora</p>
+                    <p className="text-[10px] text-[#86868b]">{Object.keys(leadsRecentes.byTag).length} administradoras · {leadsRecentes.total} leads</p>
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-[12px]">
+                      <thead>
+                        <tr className="text-[10px] text-[#9ca3af] uppercase tracking-wider border-b border-[#f0f0f5] bg-[#fafafa]">
+                          <th className="py-3 pl-5 text-left font-semibold">Administradora</th>
+                          <th className="py-3 pr-3 text-right font-semibold">Chegaram</th>
+                          <th className="py-3 pr-3 text-right font-semibold text-[#2563EB]">Ligação</th>
+                          <th className="py-3 pr-3 text-right font-semibold text-[#b49136]">Agendados</th>
+                          <th className="py-3 pr-3 text-right font-semibold text-[#10B981]">Reunião</th>
+                          <th className="py-3 pr-3 text-right font-semibold text-[#DC2626]">No-Show</th>
+                          <th className="py-3 pr-4 text-right font-semibold text-[#D946EF]">Vendas</th>
+                          <th className="py-3 pr-4 text-right font-semibold text-[#7C3AED]">Recuperação</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {Object.entries(leadsRecentes.byTag as Record<string, any>).map(([tag, data]: [string, any]) => {
+                          const isSemTag = tag === "Sem administradora";
+                          const pctLig = data.chegaram > 0 ? ((data.comLigacao / data.chegaram) * 100).toFixed(0) : "0";
+                          const pctAgend = data.chegaram > 0 ? ((data.agendados / data.chegaram) * 100).toFixed(0) : "0";
+                          const pctNs = data.agendados > 0 ? ((data.noShows / data.agendados) * 100).toFixed(0) : "0";
+                          const pctVenda = data.reuniao > 0 ? ((data.vendas / data.reuniao) * 100).toFixed(0) : "0";
+                          return (
+                            <tr key={tag} className={`border-b border-[#f0f0f5] last:border-0 hover:bg-[#fafafa] ${isSemTag ? "opacity-40" : ""}`}>
+                              <td className="py-3 pl-5 font-semibold text-[#1d1d1f]">
+                                <div className="flex items-center gap-2">
+                                  <div className={`w-2 h-2 rounded-full flex-shrink-0 ${isSemTag ? "bg-[#d1d5db]" : "bg-[#b49136]"}`} />
+                                  {tag}
+                                </div>
+                              </td>
+                              <td className="py-3 pr-3 text-right font-bold text-[#1d1d1f]">{data.chegaram}</td>
+                              <td className="py-3 pr-3 text-right">
+                                <span className="font-semibold text-[#2563EB]">{data.comLigacao}</span>
+                                <span className="text-[10px] text-[#86868b] ml-1">({pctLig}%)</span>
+                              </td>
+                              <td className="py-3 pr-3 text-right">
+                                <span className="font-semibold text-[#b49136]">{data.agendados}</span>
+                                <span className="text-[10px] text-[#86868b] ml-1">({pctAgend}%)</span>
+                              </td>
+                              <td className="py-3 pr-3 text-right font-semibold text-[#10B981]">{data.reuniao}</td>
+                              <td className="py-3 pr-3 text-right">
+                                <span className={`font-bold px-1.5 py-0.5 rounded text-[11px] ${data.noShows > 0 ? "text-[#DC2626] bg-[#fef2f2]" : "text-[#9ca3af]"}`}>
+                                  {data.noShows}{data.noShows > 0 ? ` (${pctNs}%)` : ""}
+                                </span>
+                              </td>
+                              <td className="py-3 pr-4 text-right">
+                                <span className={`font-bold px-1.5 py-0.5 rounded text-[11px] ${data.vendas > 0 ? "text-[#D946EF] bg-[#fdf4ff]" : "text-[#9ca3af]"}`}>
+                                  {data.vendas}{data.vendas > 0 ? ` (${pctVenda}%)` : ""}
+                                </span>
+                              </td>
+                              <td className="py-3 pr-4 text-right font-semibold text-[#7C3AED]">{data.recuperacao}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+
+              {/* Lista de Clientes Processados */}
+              {leadsRecentes.leads && (
+                <div className="mt-4">
+                  <button
+                    onClick={() => setShowLeadsDetail(!showLeadsDetail)}
+                    className="w-full flex items-center justify-between px-5 py-3 bg-white rounded-xl border border-[#e5e5ea] shadow-sm hover:bg-[#fafafa] transition-colors"
+                  >
+                    <div className="flex items-center gap-2">
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#86868b" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ transform: showLeadsDetail ? 'rotate(90deg)' : 'rotate(0deg)', transition: 'transform 0.2s' }}>
+                        <polyline points="9 18 15 12 9 6"></polyline>
+                      </svg>
+                      <span className="text-[11px] font-semibold text-[#86868b] uppercase tracking-widest">Detalhamento de Leads (Vendas, Agendados, No-Show, Recuperação, Perdidos)</span>
+                    </div>
+                    <span className="text-[10px] text-[#86868b]">
+                      {leadsRecentes.leads.filter((l: any) => ["scheduled", "meeting", "won"].includes(l.status) || l.noShow || l.isRecuperacao || l.isPerdido).length} clientes
+                    </span>
+                  </button>
+                  {showLeadsDetail && (
+                  <div className="bg-white rounded-b-xl border border-t-0 border-[#e5e5ea] shadow-sm overflow-hidden">
+                  <div className="p-0 max-h-[400px] overflow-y-auto">
+                    <table className="w-full text-[12px]">
+                      <thead>
+                        <tr className="text-[10px] text-[#9ca3af] uppercase tracking-wider border-b border-[#f0f0f5]">
+                          <th className="py-2 pl-5 text-left font-semibold">Cliente</th>
+                          <th className="py-2 pr-3 text-left font-semibold">Telefone</th>
+                          <th className="py-2 pr-3 text-left font-semibold">Kommo ID</th>
+                          <th className="py-2 pr-3 text-left font-semibold">Administradora</th>
+                          <th className="py-2 pr-5 text-right font-semibold">Status</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {leadsRecentes.leads
+                          .filter((l: any) => ["scheduled", "meeting", "won"].includes(l.status) || l.noShow || l.isRecuperacao || l.isPerdido)
+                          .sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+                          .map((l: any) => {
+                            let statusLabel = "Agendado";
+                            let statusColor = "text-[#b49136] bg-[#fffbeb] border-[#fde68a]";
+                            
+                            if (l.isVenda) {
+                              statusLabel = "Venda";
+                              statusColor = "text-[#10B981] bg-[#ecfdf5] border-[#a7f3d0]";
+                            } else if (l.isPerdido) {
+                              statusLabel = "Perdido";
+                              statusColor = "text-[#1d1d1f] bg-[#f0f0f5] border-[#d1d5db]";
+                            } else if (l.isRecuperacao) {
+                              statusLabel = "Recuperação";
+                              statusColor = "text-[#7C3AED] bg-[#ede9fe] border-[#ddd6fe]";
+                            } else if (l.noShow) {
+                              statusLabel = "No-Show";
+                              statusColor = "text-[#DC2626] bg-[#fef2f2] border-[#fecaca]";
+                            }
+
+                            return (
+                              <tr key={l.id} className="border-b border-[#f0f0f5] last:border-0 hover:bg-[#fafafa]">
+                                <td className="py-2.5 pl-5 font-semibold text-[#1d1d1f]">
+                                  {l.name || "Sincronizando..."}
+                                </td>
+                                <td className="py-2.5 pr-3 text-[#1d1d1f]">
+                                  {l.phone ? (
+                                    <a href={`https://wa.me/55${l.phone}`} target="_blank" rel="noreferrer" className="hover:underline text-[#16A34A] flex items-center gap-1">
+                                      <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.888-.788-1.489-1.761-1.663-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51a12.8 12.8 0 0 0-.57-.01c-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 0 1-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 0 1-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 0 1 2.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0 0 12.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 0 0 5.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 0 0-3.48-8.413Z"/></svg>
+                                      {l.phone}
+                                    </a>
+                                  ) : (
+                                    <span className="text-[#9ca3af]">N/A</span>
+                                  )}
+                                </td>
+                                <td className="py-2.5 pr-3 text-[#2563EB]">
+                                  <a href={`https://crinvestimentos1.kommo.com/leads/detail/${l.id}`} target="_blank" rel="noreferrer" className="hover:underline">
+                                    #{l.id}
+                                  </a>
+                                </td>
+                                <td className="py-2.5 pr-3 text-[#86868b]">
+                                  {l.admTag}
+                                </td>
+                                <td className="py-2.5 pr-5 text-right">
+                                  <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${statusColor}`}>
+                                    {statusLabel}
+                                  </span>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        {leadsRecentes.leads.filter((l: any) => ["scheduled", "meeting", "won", "lost"].includes(l.status) || l.noShow).length === 0 && (
+                          <tr>
+                            <td colSpan={4} className="py-6 text-center text-[#86868b] text-[12px]">
+                              Nenhum cliente agendado nesse período.
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                  </div>
+                  )}
+                </div>
+              )}
+
+              {leadsRecentes.total === 0 && (
+                <div className="bg-[#fffbeb] border border-[#fcd34d] rounded-xl p-4 text-[12px] text-[#92400e]">
+                  Nenhum lead encontrado desde {new Date(leadsRecentesSince + "T12:00:00").toLocaleDateString("pt-BR")}.
+                  As tags de administradora preenchem automaticamente após o próximo sync do Kommo.
+                </div>
+              )}
+            </div>
+          )}
+
+          {!leadsRecentes && (
+            <div className="bg-white rounded-xl border border-[#e5e5ea] shadow-sm p-8 text-center text-[12px] text-[#86868b]">
+              Carregando leads recentes...
+            </div>
+          )}
+        </div>
+
         {/* ── RANKING DE SDRs ─────────────────────────────────────────────── */}
         <div className="bg-white rounded-xl border border-[#e5e5ea] shadow-sm overflow-hidden mt-8">
            <div className="p-5 border-b border-[#f0f0f5]">
@@ -1036,8 +1329,9 @@ export default function PerformanceSdrPage() {
                       </tr>
                     ) : (
                       displayed.filter((row: any) => row.leadsGerados > 0 || row.agendamentos > 0).map((row: any, i: number) => {
-                        const conv = row.leadsGerados > 0 ? (row.agendamentos / row.leadsGerados) * 100 : 0;
-                        const ns = row.agendamentos > 0 ? ((row.noShowsNoPeriodo ?? 0) / row.agendamentos) * 100 : 0;
+                        const conv = (totais?.leadsGerados ?? 0) > 0 ? (row.agendamentos / totais!.leadsGerados) * 100 : 0;
+                        const rowSlots = (row.agendamentos || 0) + (row.reagendados || 0);
+                        const ns = rowSlots > 0 ? ((row.noShowsNoPeriodo ?? 0) / rowSlots) * 100 : 0;
                         return (
                           <tr key={row.agentName} className="border-t border-[#f0f0f5]">
                             <td className="py-3 pl-6">
@@ -1048,7 +1342,7 @@ export default function PerformanceSdrPage() {
                                </div>
                             </td>
                             <td className="py-3 font-semibold text-[#1d1d1f]">{row.agentName}</td>
-                            <td className="py-3 text-right pr-4 text-[#374151]">{row.leadsGerados}</td>
+                            <td className="py-3 text-right pr-4 text-[#374151]">{totais?.leadsGerados ?? row.leadsGerados}</td>
                             <td className="py-3 text-right pr-4 text-[#86868b]">{row.leadsNoFunil}</td>
                             <td className={`py-3 text-right pr-4 font-semibold ${conv >= 35 ? "text-[#16A34A]" : "text-[#DC2626]"}`}>{conv.toFixed(1)}%</td>
                             <td className="py-3 text-right pr-4 font-semibold text-[#2563EB]">{row.agendamentos}</td>

@@ -462,7 +462,7 @@ export async function syncKommoData(opts: SyncOptions = {}): Promise<{ synced: n
     const url = new URL(`${BASE()}/leads`);
     url.searchParams.set("limit", "250");
     url.searchParams.set("page", String(page));
-    url.searchParams.set("with", "contacts,loss_reason");
+    url.searchParams.set("with", "contacts,loss_reason,tags");
 
     // Sync incremental: só leads atualizados após `since`
     if (opts.since) {
@@ -515,7 +515,7 @@ export async function syncKommoData(opts: SyncOptions = {}): Promise<{ synced: n
       }
     }
 
-    const contactPhonesMap: Record<number, string[]> = {};
+    const contactDetailsMap: Record<number, { name: string, phones: string[] }> = {};
     const cIdsArray = Array.from(contactIds);
     if (cIdsArray.length > 0) {
       try {
@@ -544,7 +544,10 @@ export async function syncKommoData(opts: SyncOptions = {}): Promise<{ synced: n
                   }
                 }
               }
-              contactPhonesMap[contact.id] = phones.filter((p) => p.length >= 8);
+              contactDetailsMap[contact.id] = {
+                name: contact.name || "",
+                phones: phones.filter((p) => p.length >= 8)
+              };
             }
           }
         }
@@ -553,13 +556,13 @@ export async function syncKommoData(opts: SyncOptions = {}): Promise<{ synced: n
       }
     }
 
-    // ── Captura syncedAt ANTES do upsert para comparar com kommo updated_at ──
+    // ── Captura syncedAt e scheduledAt ANTES do upsert ──
     const pageIds = activeItems.map((item: any) => String(item.id));
     const existingSynced = await prisma.lead.findMany({
       where: { id: { in: pageIds } },
-      select: { id: true, syncedAt: true },
+      select: { id: true, syncedAt: true, scheduledAt: true },
     });
-    const syncedAtMap = new Map(existingSynced.map(l => [l.id, l.syncedAt]));
+    const syncedAtMap = new Map(existingSynced.map(l => [l.id, { syncedAt: l.syncedAt, scheduledAt: l.scheduledAt }]));
 
     updateSync(`Pág. ${page}: salvando ${activeItems.length} leads no banco...`, 0, 0, page);
 
@@ -580,6 +583,10 @@ export async function syncKommoData(opts: SyncOptions = {}): Promise<{ synced: n
         item._embedded?.loss_reason?.name ??
         null;
 
+      const tags: string[] = (item._embedded?.tags ?? [])
+        .map((t: any) => t.name ?? "")
+        .filter(Boolean);
+
       const custom = parseCustomFields(item.custom_fields_values ?? []);
 
       const campaignName = custom.utmCampaign ?? pipeline?.name ?? null;
@@ -589,36 +596,47 @@ export async function syncKommoData(opts: SyncOptions = {}): Promise<{ synced: n
         ? String(pipelineId)
         : null;
 
+      const closedAt = item.closed_at ? new Date(item.closed_at * 1000) : null;
+
       const nextTaskAt = openTasksMap[String(item.id)] ?? null;
 
       const phonesSet = new Set<string>();
+      let contactName: string | null = null;
       for (const c of item._embedded?.contacts ?? []) {
-        if (contactPhonesMap[c.id]) {
-          for (const p of contactPhonesMap[c.id]) phonesSet.add(p);
+        if (contactDetailsMap[c.id]) {
+          if (!contactName && contactDetailsMap[c.id].name) {
+            contactName = contactDetailsMap[c.id].name;
+          }
+          for (const p of contactDetailsMap[c.id].phones) phonesSet.add(p);
         }
       }
       const leadPhones = Array.from(phonesSet);
 
+      const finalName = contactName || item.name || `Lead ${item.id}`;
+
       return prisma.lead.upsert({
         where: { id: String(item.id) },
         update: {
+          name: finalName,
           status,
           assignedTo,
           dealValue: item.price ?? null,
           lostReason,
-          closedAt: item.closed_at ? new Date(item.closed_at * 1000) : null,
+          closedAt,
           nextTaskAt,
           sdrScore: custom.sdrScore ?? null,
           noShow: custom.noShow ?? false,
           isReagendado: custom.isReagendado ?? false,
           contactAttempts: custom.contactAttempts ?? 0,
           leadPhones,
+          tags,
           // Campo "Reunião PRÉ-VENDA" tem prioridade sobre a data inferida por etapa
           ...(custom.reuniaoPreVenda != null ? { meetingAt: custom.reuniaoPreVenda } : {}),
           syncedAt: new Date(),
         },
         create: {
           id: String(item.id),
+          name: finalName,
           source: "kommo",
           campaignId,
           campaignName,
@@ -640,6 +658,7 @@ export async function syncKommoData(opts: SyncOptions = {}): Promise<{ synced: n
           isReagendado: custom.isReagendado ?? false,
           contactAttempts: custom.contactAttempts ?? 0,
           leadPhones,
+          tags,
           syncedAt: new Date(),
         },
       });
@@ -657,7 +676,19 @@ export async function syncKommoData(opts: SyncOptions = {}): Promise<{ synced: n
       const isClosed = item.status_id === 142 || item.status_id === 143; // won/lost IDs padrão Kommo
       if (isClosed && closedAt && closedAt < sixMonthsAgo) return false;
 
-      const lastSynced = syncedAtMap.get(String(item.id));
+      const existing = syncedAtMap.get(String(item.id));
+
+      // Força enriquecimento se o lead está em scheduled/meeting mas scheduledAt ainda é null —
+      // garante que movimentações recentes no Kommo sejam capturadas mesmo que o sync
+      // já tenha rodado desde a última atualização do lead.
+      if (!existing?.scheduledAt) {
+        const pipelineForCheck = item.pipeline_id != null ? pipelines[item.pipeline_id] : null;
+        const stageForCheck = pipelineForCheck?.statuses[item.status_id] ?? "";
+        const statusForCheck = mapStatus(stageForCheck, item.status_id ?? 0);
+        if (statusForCheck === "scheduled" || statusForCheck === "meeting") return true;
+      }
+
+      const lastSynced = existing?.syncedAt ?? null;
       const kommoUpdated = new Date(item.updated_at * 1000);
       return !(lastSynced && kommoUpdated <= lastSynced);
     });
@@ -739,6 +770,8 @@ async function processLeadEvents(
     scheduledAt?: Date;
     scheduledBy?: string | null;
     meetingAt?: Date;
+    meeting2At?: Date;
+    negociacaoAt?: Date;
     reagendadoAt?: Date;
     reagendadoCount?: number;
   } = {};
@@ -761,8 +794,28 @@ async function processLeadEvents(
     if (status === "contacted" && !timestamps.contactedAt) timestamps.contactedAt = ts;
     if (status === "qualified"  && !timestamps.qualifiedAt)  timestamps.qualifiedAt = ts;
 
-    const isReuniao = sn.includes("reunião realizada") || sn.includes("reuniao realizada");
-    if (isReuniao && !timestamps.meetingAt) timestamps.meetingAt = ts;
+    const isReuniaoRealizada = afterStatusId === 88992835 || sn.includes("reunião realizada") && !sn.includes("2");
+    if (isReuniaoRealizada && !timestamps.meetingAt) {
+      timestamps.meetingAt = ts;
+      // BACKFILL: Se teve reunião, necessariamente foi agendado.
+      if (!timestamps.scheduledAt) {
+        timestamps.scheduledAt = ts;
+        timestamps.scheduledBy = "Cauê Perpétuo";
+      }
+    }
+
+    const isReuniao2 = sn.includes("2°") || sn.includes("2ª") || sn.includes("segunda reunião") || sn.includes("2a reunião");
+    if (isReuniao2 && !timestamps.meeting2At) timestamps.meeting2At = ts;
+
+    const isNegociacao = sn.includes("negociação") || sn.includes("negociacao");
+    if (isNegociacao && !timestamps.negociacaoAt) {
+      timestamps.negociacaoAt = ts;
+      // BACKFILL: Se entrou em negociação, necessariamente foi agendado antes.
+      if (!timestamps.scheduledAt) {
+        timestamps.scheduledAt = ts;
+        timestamps.scheduledBy = "Cauê Perpétuo";
+      }
+    }
 
     const isConfirmada = sn.includes("confirmada") || (sn.includes("agendado") && !sn.includes("2°"));
     if (isConfirmada) {
@@ -789,6 +842,14 @@ async function processLeadEvents(
     if (sn.includes("no show") || sn.includes("noshow")) {
       (timestamps as any).noShow = true;
       if (!(timestamps as any).noShowAt) (timestamps as any).noShowAt = ts;
+    }
+
+    let pipelineName = "";
+    for (const p of Object.values(pipelines)) {
+      if (p.statuses[afterStatusId]) { pipelineName = p.name; break; }
+    }
+    if (pipelineName.toUpperCase() === "RECUPERAÇÃO" && sn.includes("contato inicial")) {
+      if (!(timestamps as any).recuperacaoAt) (timestamps as any).recuperacaoAt = ts;
     }
   }
 

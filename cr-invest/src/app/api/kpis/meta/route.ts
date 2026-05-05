@@ -15,6 +15,8 @@ export async function GET(req: NextRequest) {
     const { searchParams } = new URL(req.url);
     const cycleId = searchParams.get("cycleId");
     const originSdr = searchParams.get("originSdr") === "true";
+    const startParam = searchParams.get("start");
+    const endParam = searchParams.get("end");
 
     let goal: {
       id: string;
@@ -36,9 +38,14 @@ export async function GET(req: NextRequest) {
       if (cycleId) {
         goal = await prisma.goal.findUnique({ where: { id: cycleId } });
       } else {
-        const now = new Date();
+        // Usa o período selecionado para encontrar a goal correta (inclui goals passadas)
+        const refStart = startParam ? new Date(startParam + "T00:00:00Z") : new Date();
+        const refEnd = endParam ? new Date(endParam + "T23:59:59Z") : new Date();
         goal = await prisma.goal.findFirst({
-          where: { startDate: { lte: now }, endDate: { gte: now } },
+          where: {
+            startDate: { lte: refEnd },
+            endDate: { gte: refStart },
+          },
           orderBy: { startDate: "desc" },
         });
       }
@@ -54,15 +61,20 @@ export async function GET(req: NextRequest) {
     // Calculate achievement (sales in the goal period)
     let achieved = 0;
 
+    // Filtra vendas pelo período SELECIONADO (start/end), não pelo período da goal.
+    // Isso garante que ao filtrar "maio", mostre apenas vendas de maio.
+    const salesStart = startParam ? new Date(startParam + "T00:00:00Z") : goal.startDate;
+    const salesEnd = endParam ? new Date(endParam + "T23:59:59Z") : goal.endDate;
+
     if (USE_MOCK) {
       let sales = getMockSales().filter(
-        (s) => s.closedAt >= goal!.startDate && s.closedAt <= goal!.endDate
+        (s) => s.closedAt >= salesStart && s.closedAt <= salesEnd
       );
       if (originSdr) sales = sales.filter((s) => !!(s as any).sdrName);
       achieved = sales.reduce((sum, s) => sum + s.value, 0);
     } else {
       const sdrFilter = originSdr ? { NOT: { sdrName: null } } : {};
-      const baseWhere = { closedAt: { gte: goal.startDate, lte: goal.endDate }, ...sdrFilter };
+      const baseWhere = { closedAt: { gte: salesStart, lte: salesEnd }, ...sdrFilter };
       const [agg, wonCount] = await Promise.all([
         prisma.sale.aggregate({
           where: baseWhere,

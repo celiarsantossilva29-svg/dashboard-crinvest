@@ -126,7 +126,7 @@ export async function GET(req: NextRequest) {
   // Agrupa: 1x, 2x, 3x, 4x+
   const distGroups: Record<number, { total: number; noShow: number }> = {};
   for (const l of reagendadosLeads) {
-    const count = l.reagendadoCount ?? 1;
+    const count = l.reagendadoCount || 1; // 0 ou null = pelo menos 1x reagendado
     const bucket = count >= 4 ? 4 : count; // 4 = "4x+"
     if (!distGroups[bucket]) distGroups[bucket] = { total: 0, noShow: 0 };
     distGroups[bucket].total++;

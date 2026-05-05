@@ -17,6 +17,23 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Invaild status" }, { status: 400 });
     }
 
+    // @ts-ignore
+    const targetInst = await prisma.installment.findUnique({ where: { id: installmentId } });
+    if (!targetInst) return NextResponse.json({ error: "Installment not found" }, { status: 404 });
+
+    if (status === "CANCELADO") {
+      // Cancela a parcela atual e todas as subsequentes
+      await prisma.installment.updateMany({
+        where: {
+          saleId: targetInst.saleId,
+          parcelaNumero: { gte: targetInst.parcelaNumero },
+          status: { in: ["PENDENTE", "INADIMPLENTE"] }
+        },
+        data: { status: "CANCELADO" }
+      });
+      return NextResponse.json({ data: { message: "Parcelas canceladas com sucesso" } });
+    }
+
     // @ts-ignore - ignorando erro EPERM do prisma generate
     const updated = await prisma.installment.update({
       where: { id: installmentId },

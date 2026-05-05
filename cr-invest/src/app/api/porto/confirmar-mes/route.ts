@@ -169,10 +169,38 @@ export async function POST(req: Request) {
       update: { value: JSON.stringify(newCommBase) },
     });
 
+    // Mark individual installments as PAGO for each confirmed apólice in this month
+    const [year, month] = mes.split("-").map(Number);
+    const mesFrom = new Date(Date.UTC(year, month - 1, 1));
+    const mesTo = new Date(Date.UTC(year, month, 1));
+    const today = new Date();
+    let parcelasMarcadas = 0;
+
+    for (const { apolice } of parsed) {
+      // Find sale(s) with this apólice in notes
+      const sales = await prisma.sale.findMany({
+        where: { notes: { contains: apolice } },
+        select: { id: true },
+      });
+      if (!sales.length) continue;
+
+      const saleIds = sales.map(s => s.id);
+      const r = await prisma.installment.updateMany({
+        where: {
+          saleId: { in: saleIds },
+          dataVencimento: { gte: mesFrom, lt: mesTo },
+          status: { notIn: ["PAGO", "CANCELADO"] },
+        },
+        data: { status: "PAGO", pago: true, dataPagamento: today },
+      });
+      parcelasMarcadas += r.count;
+    }
+
     return NextResponse.json({
       processadas: parsed.length,
       novas,
       atualizadas: parsed.length - novas,
+      parcelasMarcadas,
       preview: parsed.slice(0, 5),
     });
   } catch (e) {

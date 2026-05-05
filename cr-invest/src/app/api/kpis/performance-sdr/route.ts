@@ -20,7 +20,8 @@ export interface SdrStats {
   ligacoesPorDia: number;      // cadência: ligações / dia útil
   tarefasVencidas: number;
   // Passagem de bastão
-  agendamentos: number;
+  agendamentos: number;         // time todo (SDR + IA)
+  agendamentosProprios: number; // só scheduledBy = este SDR (para conversão individual)
   agendPorDia: number;         // produtividade diária
   agendPorSemana: number;      // produtividade semanal
   taxaReagendamento: number;
@@ -72,6 +73,7 @@ export interface SdrApiResponse {
   agendamentosPorOrigem: {
     total: number;
     ia: AgendOrigemPanel;
+    sdr: AgendOrigemPanel;
     other: AgendOrigemPanel;
   };
 }
@@ -96,11 +98,11 @@ export async function GET(req: NextRequest) {
 
     const now = new Date();
     const startDate = start
-      ? new Date(start + "T00:00:00-03:00")
-      : new Date(now.getFullYear(), now.getMonth(), 1);
+      ? new Date(start + "T00:00:00.000Z")
+      : new Date(Date.UTC(now.getFullYear(), now.getMonth(), 1));
     const endDate = end
-      ? new Date(end + "T23:59:59-03:00")
-      : new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
+      ? new Date(end + "T23:59:59.999Z")
+      : new Date(Date.UTC(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999));
 
     const numDays = Math.max(1, Math.round((endDate.getTime() - startDate.getTime()) / 86400000));
 
@@ -217,6 +219,7 @@ function buildMockResponse(startDate: Date, endDate: Date, now: Date, numDays: n
       ligacoesPorDia,
       tarefasVencidas,
       agendamentos,
+      agendamentosProprios: agendamentos,
       reunioes,
       agendPorDia,
       agendPorSemana,
@@ -259,6 +262,7 @@ function buildMockResponse(startDate: Date, endDate: Date, now: Date, numDays: n
     agendamentosPorOrigem: {
       total: 0,
       ia:    { agendamentos: 0, noShows: 0, taxaNoShow: 0 },
+      sdr:   { agendamentos: 0, noShows: 0, taxaNoShow: 0 },
       other: { agendamentos: 0, noShows: 0, taxaNoShow: 0 },
     },
     totais: {
@@ -352,7 +356,7 @@ async function buildRealResponse(startDate: Date, endDate: Date, now: Date, numD
           { scheduledAt: { gte: startDate, lte: endDate } },
           { reagendadoAt: { gte: startDate, lte: endDate } },
           { meetingAt: { gte: startDate, lte: endDate } },
-          { noShowAt: { gte: startDate, lte: endDate } }
+          { noShowAt: { gte: startDate, lte: endDate } },
         ]
       },
       select: {
@@ -414,6 +418,21 @@ async function buildRealResponse(startDate: Date, endDate: Date, now: Date, numD
   // Nomes de agentes IA — definido aqui para uso tanto no loop de stats quanto no resumo final
   const IA_NAMES_SET = new Set(["IA", "Sellmap"]);
 
+  // Âncora temporal de agendamento: usa scheduledAt, então meetingAt, e por último
+  // createdAt quando o status indica "scheduled"/"meeting" mas nenhuma data foi salva
+  // pelo sync do Kommo. Usar createdAt (e não syncedAt) evita contar leads antigos que
+  // têm syncedAt atualizado a cada sync diário, mesmo estando em "meeting" desde 2025.
+  const agendAt = (l: typeof leadsRows[number]): Date | null => {
+    if (l.scheduledAt) return l.scheduledAt;
+    if (l.meetingAt) return l.meetingAt;
+    // Fallback para createdAt apenas se o lead está atualmente em scheduled/meeting
+    // mas o evento de agendamento não foi capturado. Leads "won" sem scheduledAt/meetingAt
+    // são vendas diretas (ex: Autolead Facebook) e não devem contar como agendamento.
+    if (['scheduled', 'meeting'].includes(l.status ?? ''))
+      return l.createdAt;
+    return null;
+  };
+
   const stats: SdrStats[] = agentNames.map((name) => {
     // Match parcial para capturar tanto "Cauê" (cadastro) quanto "Cauê Perpétuo" (Kommo/GoTo)
     const matchName = (field: string | null | undefined) => {
@@ -468,30 +487,36 @@ async function buildRealResponse(startDate: Date, endDate: Date, now: Date, numD
     // ── Métricas de passagem de bastão — escopo total do período ─────────────
     // Cauê gerencia todos os leads (IA + manuais), portanto as métricas de agendamento,
     // reunião e no-show refletem o quadro completo da equipe no período.
-    // Não filtramos por scheduledBy para não excluir leads da IA ou de períodos anteriores
-    // que tiveram meeting/reagendamento agora.
 
-    // Agendamentos novos no período (qualquer origem: SDR, IA, etc.)
-    const todosAgendadosPeriodo = leadsRows.filter((l) =>
-      l.scheduledAt != null && l.scheduledAt >= startDate && l.scheduledAt <= endDate
-    );
+    // Agendamentos novos no período (qualquer origem: SDR, IA, etc.) — usado no funil geral
+    const todosAgendadosPeriodo = leadsRows.filter((l) => {
+      const at = agendAt(l);
+      return at != null && at >= startDate && at <= endDate;
+    });
     const agendamentos = todosAgendadosPeriodo.length;
 
-    // Para calcular agendamentosIa continuamos usando o filtro de origem IA
-    const agendamentosIa = leadsRows.filter((l) =>
-      IA_NAMES_SET.has(l.scheduledBy ?? "") &&
-      l.scheduledAt != null &&
-      l.scheduledAt >= startDate && l.scheduledAt <= endDate
-    ).length;
+    // Agendamentos próprios do SDR: scheduledBy direto, ou scheduledBy=null (a IA sempre tem
+    // scheduledBy="IA"; null significa que foi o SDR que agendou mas o Kommo não registrou quem)
+    const agendamentosProprios = leadsRows.filter((l) => {
+      const at = agendAt(l);
+      if (!at || at < startDate || at > endDate) return false;
+      if (IA_NAMES_SET.has(l.scheduledBy ?? "")) return false;
+      return matchName(l.scheduledBy) || !l.scheduledBy;
+    }).length;
 
-    // Reuniões realizadas NO PERÍODO — todos os leads com meetingAt no período
-    // + fallback: leads fechados (won/lost) no período sem meetingAt preenchido
-    // Inclui reuniões reagendadas que viraram realização (meetingAt >= reagendadoAt)
+    // Agendamentos via IA
+    const agendamentosIa = leadsRows.filter((l) => {
+      const at = agendAt(l);
+      return IA_NAMES_SET.has(l.scheduledBy ?? "") && at != null && at >= startDate && at <= endDate;
+    }).length;
+
+    // Reuniões realizadas — mesmo coorte dos agendamentos
     const reunioes = leadsRows.filter((l) => {
-      const meetingInPeriod = l.meetingAt != null && l.meetingAt >= startDate && l.meetingAt <= endDate;
-      const closedInPeriod  = l.closedAt  != null && l.closedAt  >= startDate && l.closedAt  <= endDate
-                              && ["won", "lost"].includes(l.status);
-      return meetingInPeriod || closedInPeriod;
+      const at = agendAt(l);
+      if (at == null || at < startDate || at > endDate) return false;
+      const temMeeting = l.meetingAt != null || l.status === "meeting";
+      const fechadoComReuniao = ["won", "lost"].includes(l.status) && l.closedAt != null;
+      return temMeeting || fechadoComReuniao;
     }).length;
 
     // Reagendamentos no período (leads que tiveram no-show e foram reconvocados)
@@ -520,7 +545,9 @@ async function buildRealResponse(startDate: Date, endDate: Date, now: Date, numD
     const noShowsNoPeriodo = leadsRows.filter((l) =>
       l.noShowAt != null && l.noShowAt >= startDate && l.noShowAt <= endDate
     ).length;
-    const taxaNoShow = agendamentos > 0 ? parseFloat(((noShowsNoPeriodo / agendamentos) * 100).toFixed(1)) : 0;
+    // Denominador correto: agendamentos novos + reagendamentos (cada slot pode virar no-show)
+    const totalSlots = agendamentos + reagendados;
+    const taxaNoShow = totalSlots > 0 ? parseFloat(((noShowsNoPeriodo / totalSlots) * 100).toFixed(1)) : 0;
 
     const recuperacao = agentLeadsPeriod.filter((l) => {
       return l.status !== "lost" && l.lostReason != null && l.syncedAt && l.syncedAt >= startDate && l.syncedAt <= endDate;
@@ -572,6 +599,7 @@ async function buildRealResponse(startDate: Date, endDate: Date, now: Date, numD
       ligacoesPorDia,
       tarefasVencidas,
       agendamentos,
+      agendamentosProprios,
       agendamentosIa,
       reunioes,
       agendPorDia,
@@ -599,8 +627,12 @@ async function buildRealResponse(startDate: Date, endDate: Date, now: Date, numD
       if (!dailyMap[k]) dailyMap[k] = { leads: 0, scheduled: 0, reagendado: 0, meeting: 0 };
       dailyMap[k][field]++;
     };
+    // Para o gráfico diário queremos QUANDO o agendamento foi feito (ação do SDR),
+    // não para quando a reunião está marcada — por isso usamos scheduledAt e nunca meetingAt.
+    const scheduledActionAt = l.scheduledAt
+      ?? (['scheduled', 'meeting', 'won'].includes(l.status ?? '') ? l.createdAt : null);
     inc(l.createdAt, "leads");
-    inc(l.scheduledAt, "scheduled");
+    inc(scheduledActionAt, "scheduled");
     inc(l.reagendadoAt, "reagendado");
     inc(l.meetingAt, "meeting");
   }
@@ -644,18 +676,26 @@ async function buildRealResponse(startDate: Date, endDate: Date, now: Date, numD
 
   // ── Origem dos agendamentos (scheduledAt no período — mesma âncora dos SDRs) ──
 
-  // Total real: todos os leads com scheduledAt no período (independente de scheduledBy)
-  const allAgendLeads = leadsRows.filter(l =>
-    l.scheduledAt != null && l.scheduledAt >= startDate && l.scheduledAt <= endDate
-  );
+  // Total real: todos os leads agendados no período
+  const allAgendLeads = leadsRows.filter(l => {
+    const at = agendAt(l);
+    return at != null && at >= startDate && at <= endDate;
+  });
 
   const agendIaLeads = allAgendLeads.filter(l => IA_NAMES_SET.has(l.scheduledBy ?? ""));
-  // Other inclui scheduledBy = null (histórico ainda não sincronizado) + ex-usuários + outros
+  // SDR: scheduledBy é explicitamente o nome de um SDR cadastrado
+  const agendSdrLeads = allAgendLeads.filter(l => {
+    if (IA_NAMES_SET.has(l.scheduledBy ?? "")) return false;
+    if (!l.scheduledBy) return false; // null = origem desconhecida, vai para "other"
+    return isSdr(l.scheduledBy);
+  });
+  // Other: scheduledBy null (origem desconhecida) ou preenchido mas não é IA nem SDR
   const agendOtherLeads = allAgendLeads.filter(l =>
     !IA_NAMES_SET.has(l.scheduledBy ?? "") &&
-    !(l.scheduledBy != null && isSdr(l.scheduledBy))
+    (!l.scheduledBy || !isSdr(l.scheduledBy))
   );
   const noShowIa = agendIaLeads.filter(l => l.noShowAt != null && l.noShowAt >= startDate && l.noShowAt <= endDate).length;
+  const noShowSdr = agendSdrLeads.filter(l => l.noShowAt != null && l.noShowAt >= startDate && l.noShowAt <= endDate).length;
   const noShowOther = agendOtherLeads.filter(l => l.noShowAt != null && l.noShowAt >= startDate && l.noShowAt <= endDate).length;
   const agendamentosPorOrigem = {
     total: allAgendLeads.length,
@@ -663,6 +703,11 @@ async function buildRealResponse(startDate: Date, endDate: Date, now: Date, numD
       agendamentos: agendIaLeads.length,
       noShows: noShowIa,
       taxaNoShow: agendIaLeads.length > 0 ? parseFloat(((noShowIa / agendIaLeads.length) * 100).toFixed(1)) : 0,
+    },
+    sdr: {
+      agendamentos: agendSdrLeads.length,
+      noShows: noShowSdr,
+      taxaNoShow: agendSdrLeads.length > 0 ? parseFloat(((noShowSdr / agendSdrLeads.length) * 100).toFixed(1)) : 0,
     },
     other: {
       agendamentos: agendOtherLeads.length,
