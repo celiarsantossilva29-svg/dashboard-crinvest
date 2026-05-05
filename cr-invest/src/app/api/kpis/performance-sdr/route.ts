@@ -542,9 +542,11 @@ async function buildRealResponse(startDate: Date, endDate: Date, now: Date, numD
         : 0;
 
     // No-Show Global: todos os eventos noShowAt no período
-    const noShowsNoPeriodo = leadsRows.filter((l) =>
-      l.noShowAt != null && l.noShowAt >= startDate && l.noShowAt <= endDate
-    ).length;
+    const noShowsNoPeriodo = leadsRows.filter((l) => {
+      if (l.noShowAt == null || l.noShowAt < startDate || l.noShowAt > endDate) return false;
+      if (l.meetingAt != null || l.status === "won") return false; // Perdoa se foi atendido
+      return true;
+    }).length;
     // Denominador correto: agendamentos novos + reagendamentos (cada slot pode virar no-show)
     const totalSlots = agendamentos + reagendados;
     const taxaNoShow = totalSlots > 0 ? parseFloat(((noShowsNoPeriodo / totalSlots) * 100).toFixed(1)) : 0;
@@ -552,6 +554,7 @@ async function buildRealResponse(startDate: Date, endDate: Date, now: Date, numD
     // No-Shows e Taxa Individuais do SDR
     const noShowsProprios = leadsRows.filter((l) => {
       if (l.noShowAt == null || l.noShowAt < startDate || l.noShowAt > endDate) return false;
+      if (l.meetingAt != null || l.status === "won") return false; // Perdoa se foi atendido
       if (IA_NAMES_SET.has(l.scheduledBy ?? "")) return false;
       return matchName(l.scheduledBy) || !l.scheduledBy;
     }).length;
