@@ -634,8 +634,8 @@ export default function PerformanceSdrPage() {
                           avatar={sdr.agentName.charAt(0).toUpperCase()}
                           bg="bg-[#b49136]"
                           agendamentos={sdr.agendamentosProprios ?? sdr.agendamentos}
-                          noShows={sdr.noShowsNoPeriodo ?? 0}
-                          taxaNoShow={sdr.taxaNoShow ?? 0}
+                          noShows={sdr.noShowsProprios ?? sdr.noShowsNoPeriodo ?? 0}
+                          taxaNoShow={sdr.taxaNoShowPropria ?? sdr.taxaNoShow ?? 0}
                           highlight={selectedAgent === sdr.agentName}
                           conversao={conv}
                           taxaRetorno={sdr.taxaReagendamento ?? null}

@@ -416,7 +416,7 @@ async function buildRealResponse(startDate: Date, endDate: Date, now: Date, numD
   const agentNames = sdrVendedores.map((v) => v.nome).filter(Boolean) as string[];
 
   // Nomes de agentes IA — definido aqui para uso tanto no loop de stats quanto no resumo final
-  const IA_NAMES_SET = new Set(["IA", "Sellmap"]);
+  const IA_NAMES_SET = new Set(["IA", "Sellmap", "Alice"]);
 
   // Âncora temporal de agendamento: usa scheduledAt, então meetingAt, e por último
   // createdAt quando o status indica "scheduled"/"meeting" mas nenhuma data foi salva
@@ -541,13 +541,30 @@ async function buildRealResponse(startDate: Date, endDate: Date, now: Date, numD
         ? parseFloat(((reagendadosComMeeting / reagendados) * 100).toFixed(1))
         : 0;
 
-    // No-Show: todos os eventos noShowAt no período
+    // No-Show Global: todos os eventos noShowAt no período
     const noShowsNoPeriodo = leadsRows.filter((l) =>
       l.noShowAt != null && l.noShowAt >= startDate && l.noShowAt <= endDate
     ).length;
     // Denominador correto: agendamentos novos + reagendamentos (cada slot pode virar no-show)
     const totalSlots = agendamentos + reagendados;
     const taxaNoShow = totalSlots > 0 ? parseFloat(((noShowsNoPeriodo / totalSlots) * 100).toFixed(1)) : 0;
+
+    // No-Shows e Taxa Individuais do SDR
+    const noShowsProprios = leadsRows.filter((l) => {
+      if (l.noShowAt == null || l.noShowAt < startDate || l.noShowAt > endDate) return false;
+      if (IA_NAMES_SET.has(l.scheduledBy ?? "")) return false;
+      return matchName(l.scheduledBy) || !l.scheduledBy;
+    }).length;
+
+    const reagendadosProprios = leadsRows.filter((l) => {
+      const ts = l.reagendadoAt;
+      if (ts == null || ts < startDate || ts > endDate) return false;
+      if (IA_NAMES_SET.has(l.scheduledBy ?? "")) return false;
+      return matchName(l.scheduledBy) || !l.scheduledBy;
+    }).length;
+    
+    const totalSlotsProprios = agendamentosProprios + reagendadosProprios;
+    const taxaNoShowPropria = totalSlotsProprios > 0 ? parseFloat(((noShowsProprios / totalSlotsProprios) * 100).toFixed(1)) : 0;
 
     const recuperacao = agentLeadsPeriod.filter((l) => {
       return l.status !== "lost" && l.lostReason != null && l.syncedAt && l.syncedAt >= startDate && l.syncedAt <= endDate;
@@ -609,7 +626,9 @@ async function buildRealResponse(startDate: Date, endDate: Date, now: Date, numD
       recuperacao,
       recuperacaoMotivoTop,
       taxaNoShow,
+      taxaNoShowPropria,
       noShowsNoPeriodo,
+      noShowsProprios,
       sdrScoreMedia,
       tempomaturacaoDias,
       ligacoes,
