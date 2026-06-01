@@ -17,20 +17,22 @@ export async function GET() {
 export async function POST(req: Request) {
   try {
     const body = await req.json();
-    const { 
+    const {
       id, nome, email, role, fixoMensal, installments,
       bronzeRate, silverRate, goldRate, silverMin, goldMin,
-      permissions, password 
+      comissaoMultiplier, permissions, password
     } = body;
 
     // Se temos um ID, tentamos atualizar por ID para permitir trocar o e-mail
     if (id) {
+      const { status } = body;
       const updated = await prisma.vendedor.update({
         where: { id: String(id) },
         data: {
           nome,
           email,
           role,
+          ...(status != null ? { status } : {}),
           fixoMensal: Number(fixoMensal) || 0,
           installments: Number(installments) || 12,
           bronzeRate: Number(bronzeRate) || 0,
@@ -38,6 +40,7 @@ export async function POST(req: Request) {
           goldRate: Number(goldRate) || 0,
           silverMin: Number(silverMin) || 0,
           goldMin: Number(goldMin) || 0,
+          comissaoMultiplier: comissaoMultiplier != null ? Number(comissaoMultiplier) : 1.0,
           permissions: typeof permissions === "string" ? permissions : JSON.stringify(permissions || {}),
           password: password || undefined
         }
@@ -59,6 +62,7 @@ export async function POST(req: Request) {
         goldRate: Number(goldRate) || 0,
         silverMin: Number(silverMin) || 0,
         goldMin: Number(goldMin) || 0,
+        comissaoMultiplier: comissaoMultiplier != null ? Number(comissaoMultiplier) : 1.0,
         permissions: typeof permissions === "string" ? permissions : JSON.stringify(permissions || {}),
         password: password || "mudar123"
       },

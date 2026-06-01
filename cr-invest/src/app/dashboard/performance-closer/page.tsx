@@ -30,13 +30,15 @@ const TOOLTIP_STYLE = {
 
 // ─── types ────────────────────────────────────────────────────────────────────
 
-interface CloserStats { agentName: string; vendas: number; totalReunioes: number; receita: number; ticketMedio: number; taxaWin: number; reunioesPorVenda: number; taxaNoShow: number; }
+interface CloserStats { agentName: string; vendas: number; cancelamentos: number; taxaCancelamento: number; totalReunioes: number; receita: number; ticketMedio: number; taxaWin: number; reunioesPorVenda: number; taxaNoShow: number; }
 interface Installment { parcelaNumero: number; dataVencimento: string; valorParcela: number; pago: boolean; }
-interface DealCard { id: string; clientName: string; assignedTo: string; value: number; closedAt: string; status: "won" | "lost"; lostReason: string | null; campaignName: string | null; installments?: Installment[]; }
+interface DealCard { id: string; clientName: string; assignedTo: string; value: number; closedAt: string; status: "won" | "lost"; lostReason: string | null; campaignName: string | null; contracts?: number; installments?: Installment[]; }
 interface LossReason { reason: string; count: number; }
+interface FunilSnapshot { reuniao1Realizada: number; reuniao2Agendada: number; reuniao2Realizada: number; negociacao: number; wonCount: number; }
 interface ApiData {
   agents: CloserStats[]; deals: DealCard[]; lossReasons: LossReason[];
   totals: { vendas: number; receita: number; ticketMedioGeral: number; taxaWinGeral: number; totalReunioes: number; totalReunioes2: number; totalNegociacoes: number; noShowGeral: number; leadTimeMedioGeral: number; };
+  funilSnapshot?: FunilSnapshot;
   syncStatus?: any;
 }
 type DealTab = "won" | "lost";
@@ -74,9 +76,14 @@ function NegocioCard({ deal }: { deal: DealCard }) {
           <p className="font-semibold text-[13px] text-[#111827] truncate">{deal.clientName}</p>
           <p className="text-[11px] text-[#9ca3af] mt-0.5">{deal.assignedTo}</p>
         </div>
-        <span className={`flex-shrink-0 text-[10px] font-bold px-2 py-0.5 rounded ${isWon ? "bg-[#f0fdf4] text-[#16A34A]" : "bg-[#fef2f2] text-[#DC2626]"}`}>
-          {isWon ? "Ganho" : "Perdido"}
-        </span>
+        <div className="flex items-center gap-1.5 flex-shrink-0">
+          {isWon && deal.contracts != null && deal.contracts > 1 && (
+            <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-[#eff6ff] text-[#2563eb]">{deal.contracts} cotas</span>
+          )}
+          <span className={`text-[10px] font-bold px-2 py-0.5 rounded ${isWon ? "bg-[#f0fdf4] text-[#16A34A]" : "bg-[#fef2f2] text-[#DC2626]"}`}>
+            {isWon ? "Ganho" : "Perdido"}
+          </span>
+        </div>
       </div>
       <p className={`text-[18px] font-semibold mb-2 ${isWon ? "text-[#16A34A]" : "text-[#9ca3af]"}`}>
         {deal.value > 0 ? fmtBRL(deal.value) : "—"}
@@ -163,6 +170,7 @@ export default function PerformanceCloserPage() {
   const agents = apiData?.agents ?? [];
   const lossReasons = apiData?.lossReasons ?? [];
   const totals = apiData?.totals;
+  const funilSnapshot = apiData?.funilSnapshot;
 
   const displayedAgents = agents.filter((a) => {
     if (agentFilter === "") return true;
@@ -197,21 +205,22 @@ export default function PerformanceCloserPage() {
   const displayReceita     = selectedAgent ? selectedAgent.receita          : (totals?.receita          ?? 0);
   const displayTicketMedio = selectedAgent ? selectedAgent.ticketMedio      : (totals?.ticketMedioGeral ?? 0);
   const displayTaxaWin     = selectedAgent ? selectedAgent.taxaWin          : (totals?.taxaWinGeral     ?? 0);
-  const displayNoShow      = selectedAgent ? selectedAgent.taxaNoShow       : (totals?.noShowGeral      ?? 0);
   const displayLeadTime    = totals?.leadTimeMedioGeral ?? 0;
   const displayVendas      = selectedAgent ? selectedAgent.vendas           : (totals?.vendas           ?? 0);
 
   const pctAtingidoDaMeta = Math.min(100, Math.round((displayReceita / metaMesVal) * 100));
   const faltamReceita = Math.max(0, metaMesVal - displayReceita);
 
-  const reunioesFeitas      = selectedAgent ? selectedAgent.totalReunioes    : (totals?.totalReunioes    ?? 0);
-  const reunioes2Realizadas = selectedAgent ? (selectedAgent as any).totalReunioes2    : (totals?.totalReunioes2    ?? 0);
-  const propostasRealizadas = selectedAgent ? (selectedAgent as any).totalNegociacoes  : (totals?.totalNegociacoes  ?? 0);
+  const reunioesFeitas         = selectedAgent ? selectedAgent.totalReunioes : (totals?.totalReunioes ?? 0);
+  // Funil de vendas usa snapshot por cohort (leads criados no período, estado atual) — igual ao Kommo filtrado por criação
+  const reunioes2Agendadas     = funilSnapshot?.reuniao2Agendada   ?? 0;
+  const reunioes2Realizadas    = funilSnapshot?.reuniao2Realizada  ?? 0;
+  const propostasRealizadas    = funilSnapshot?.negociacao         ?? 0;
+  const funilWonCount          = funilSnapshot?.wonCount           ?? 0;
   const totalVendasPeriodo  = displayVendas;
 
   const qtDiasPeriodo = Math.max(1, Math.ceil((new Date(end).getTime() - new Date(start).getTime()) / 86400000));
   const reunioesPorDia = (reunioesFeitas / qtDiasPeriodo).toFixed(1);
-  const comparecimentoMedio = Math.round(100 - displayNoShow);
 
   // Projeção
   const ritmoAtualDia = displayReceita / qtDiasPeriodo;
@@ -350,21 +359,21 @@ export default function PerformanceCloserPage() {
         {/* ── CENTRAL LAYER (Funil & Produtividade) ───────────────────────── */}
         <div className="flex flex-col lg:flex-row gap-6 mt-2">
           
-          {/* LADO ESQUERDO: Funil de Vendas (68%) */}
-          <div className="w-full lg:w-[68%]">
+          {/* LADO ESQUERDO: Funil de Vendas (78%) */}
+          <div className="w-full lg:w-[78%]">
             <h2 className="text-[11px] font-bold text-[#86868b] uppercase tracking-wider mb-2">Funil de Vendas</h2>
-            
+
             <div className="flex items-center gap-0 w-full mb-3">
-               
+
                {/* STEP 1 */}
                <div className="flex-1 bg-white border border-[#e5e5ea] rounded-xl p-5 shadow-sm relative">
                   <h3 className="text-[10px] font-bold text-[#86868b] uppercase mb-2">1ª Reunião Realizada</h3>
-                  <p className="text-[28px] font-normal leading-none text-[#1d1d1f] mb-1">{reunioesFeitas}</p>
+                  <p className="text-[28px] font-normal leading-none text-[#1d1d1f] mb-1">{funilSnapshot?.reuniao1Realizada ?? reunioesFeitas}</p>
                   <p className="text-[11px] font-medium text-[#1d1d1f] mb-4">Meta {targetReunioes}</p>
-                  
+
                   <div className="inline-flex items-center gap-2 bg-[#fdfaec] px-3 py-1.5 rounded-md mb-6">
                      <svg className="w-4 h-4 text-[#d97706]" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M10 9a3 3 0 100-6 3 3 0 000 6zm-7 9a7 7 0 1114 0H3z" clipRule="evenodd" /></svg>
-                     <span className="text-[13px] font-bold text-[#d97706]">{Math.round((reunioesFeitas / targetReunioes) * 100)}%</span>
+                     <span className="text-[13px] font-bold text-[#d97706]">{Math.round(((funilSnapshot?.reuniao1Realizada ?? reunioesFeitas) / targetReunioes) * 100)}%</span>
                   </div>
 
                   <div className="border-t border-[#f0f0f5] pt-3 flex items-center justify-between">
@@ -378,17 +387,36 @@ export default function PerformanceCloserPage() {
                {/* STEP 2 */}
                <div className="flex-1 bg-white border border-[#e5e5ea] rounded-xl p-5 shadow-sm relative">
                   <h3 className="text-[10px] font-bold text-[#86868b] uppercase mb-2">2ª Reunião Agendada</h3>
-                  <p className="text-[28px] font-normal leading-none text-[#1d1d1f] mb-1">{reunioes2Realizadas}</p>
+                  <p className="text-[28px] font-normal leading-none text-[#1d1d1f] mb-1">{reunioes2Agendadas}</p>
                   <p className="text-[11px] font-medium text-[#1d1d1f] mb-4">Meta {targetReunioes2}</p>
-                  
+
                   <div className="inline-flex items-center gap-2 bg-[#fdfaec] px-3 py-1.5 rounded-md mb-6">
                      <svg className="w-4 h-4 text-[#d97706]" fill="currentColor" viewBox="0 0 20 20"><path d="M13 6a3 3 0 11-6 0 3 3 0 016 0zM18 8a2 2 0 11-4 0 2 2 0 014 0zM14 15a4 4 0 00-8 0v3h8v-3zM6 8a2 2 0 11-4 0 2 2 0 014 0zM16 18v-3a5.972 5.972 0 00-.75-2.906A3.005 3.005 0 0119 15v3h-3zM4.75 12.094A5.973 5.973 0 004 15v3H1v-3a3 3 0 013.75-2.906z" /></svg>
-                     <span className="text-[13px] font-bold text-[#d97706]">{Math.round((reunioes2Realizadas / targetReunioes2) * 100)}%</span>
+                     <span className="text-[13px] font-bold text-[#d97706]">{Math.round((reunioes2Agendadas / targetReunioes2) * 100)}%</span>
                   </div>
 
                   <div className="border-t border-[#f0f0f5] pt-3 flex items-center justify-between">
-                     <span className="text-[10px] font-bold text-[#1d1d1f]">Taxa 2ª/1ª</span>
-                     <span className="text-[12px] font-bold text-[#1d1d1f]">{reunioesFeitas > 0 ? Math.round((reunioes2Realizadas / reunioesFeitas) * 100) : 0}%</span>
+                     <span className="text-[10px] font-bold text-[#1d1d1f]">Taxa 2ª Ag./1ª</span>
+                     <span className="text-[12px] font-bold text-[#1d1d1f]">{reunioesFeitas > 0 ? Math.round((reunioes2Agendadas / reunioesFeitas) * 100) : 0}%</span>
+                  </div>
+               </div>
+
+               <FunnelChevron />
+
+               {/* STEP 2b - 2ª Reunião Realizada */}
+               <div className="flex-1 bg-white border border-[#e5e5ea] rounded-xl p-5 shadow-sm relative">
+                  <h3 className="text-[10px] font-bold text-[#86868b] uppercase mb-2">2ª Reunião Realizada</h3>
+                  <p className="text-[28px] font-normal leading-none text-[#1d1d1f] mb-1">{reunioes2Realizadas}</p>
+                  <p className="text-[11px] font-medium text-[#1d1d1f] mb-4">&nbsp;</p>
+
+                  <div className="inline-flex items-center gap-2 bg-[#fdfaec] px-3 py-1.5 rounded-md mb-6">
+                     <svg className="w-4 h-4 text-[#d97706]" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" /></svg>
+                     <span className="text-[13px] font-bold text-[#d97706]">{reunioes2Agendadas > 0 ? Math.round((reunioes2Realizadas / reunioes2Agendadas) * 100) : 0}%</span>
+                  </div>
+
+                  <div className="border-t border-[#f0f0f5] pt-3 flex items-center justify-between">
+                     <span className="text-[10px] font-bold text-[#1d1d1f]">Taxa Real./Ag.</span>
+                     <span className="text-[12px] font-bold text-[#1d1d1f]">{reunioes2Agendadas > 0 ? Math.round((reunioes2Realizadas / reunioes2Agendadas) * 100) : 0}%</span>
                   </div>
                </div>
 
@@ -399,7 +427,7 @@ export default function PerformanceCloserPage() {
                   <h3 className="text-[10px] font-bold text-[#86868b] uppercase mb-2">Negociação</h3>
                   <p className="text-[28px] font-normal leading-none text-[#1d1d1f] mb-1">{propostasRealizadas}</p>
                   <p className="text-[11px] font-medium text-[#1d1d1f] mb-4">Meta {targetPropostas}</p>
-                  
+
                   <div className="inline-flex items-center gap-2 bg-[#fdfaec] px-3 py-1.5 rounded-md mb-6">
                      <svg className="w-4 h-4 text-[#d97706]" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
                      <span className="text-[13px] font-bold text-[#d97706]">{Math.round((propostasRealizadas / targetPropostas) * 100)}%</span>
@@ -418,27 +446,27 @@ export default function PerformanceCloserPage() {
                   <h3 className="text-[10px] font-bold text-[#86868b] uppercase mb-2">Venda Ganha</h3>
                   <p className="text-[28px] font-normal leading-none text-[#1d1d1f] mb-1">{totalVendasPeriodo}</p>
                   <p className="text-[11px] font-medium text-[#1d1d1f] mb-4">Meta {targetVendas}</p>
-                  
+
                   <div className="inline-flex items-center gap-2 bg-[#fdfaec] px-3 py-1.5 rounded-md mb-6">
                      <svg className="w-4 h-4 text-[#d97706]" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M8 4a4 4 0 100 8 4 4 0 000-8zM2 8a6 6 0 1110.89 3.476l4.817 4.817a1 1 0 01-1.414 1.414l-4.816-4.816A6 6 0 012 8z" clipRule="evenodd" /></svg>
                      <span className="text-[13px] font-bold text-[#d97706]">{Math.round((totalVendasPeriodo / targetVendas) * 100)}%</span>
                   </div>
 
                   <div className="border-t border-[#f0f0f5] pt-3 flex items-center justify-between">
-                     <span className="text-[10px] font-bold text-[#1d1d1f]">Taxa Venda/Negoc.</span>
-                     <span className="text-[12px] font-bold text-[#1d1d1f]">{propostasRealizadas > 0 ? Math.round((totalVendasPeriodo / propostasRealizadas) * 100) : 0}%</span>
+                     <span className="text-[10px] font-bold text-[#1d1d1f]">Taxa Venda/1ª</span>
+                     <span className="text-[12px] font-bold text-[#1d1d1f]">{(funilSnapshot?.reuniao1Realizada ?? 0) > 0 ? Math.round((totalVendasPeriodo / (funilSnapshot?.reuniao1Realizada ?? 1)) * 100) : 0}%</span>
                   </div>
                </div>
-               
+
             </div>
-            
+
             <div className="bg-[#f0f0f5]/60 rounded-md py-3 text-center">
-               <p className="text-[12px] text-[#1d1d1f]">Taxa geral do funil: <span className="font-bold text-[#1d1d1f]">{reunioesFeitas > 0 ? Math.round((totalVendasPeriodo / reunioesFeitas) * 100) : 0}%</span> <span className="text-[#86868b] mx-2">•</span> <span className="text-[#374151]">De Reunião 1 até a venda</span></p>
+               <p className="text-[12px] text-[#1d1d1f]">Taxa geral do funil: <span className="font-bold text-[#1d1d1f]">{(funilSnapshot?.reuniao1Realizada ?? 0) > 0 ? Math.round((totalVendasPeriodo / (funilSnapshot?.reuniao1Realizada ?? 1)) * 100) : 0}%</span> <span className="text-[#86868b] mx-2">•</span> <span className="text-[#374151]">De Reunião 1 até a venda</span></p>
             </div>
           </div>
 
-          {/* LADO DIREITO: Produtividade (32%) */}
-          <div className="w-full lg:w-[32%]">
+          {/* LADO DIREITO: Produtividade (22%) */}
+          <div className="w-full lg:w-[22%]">
             <h2 className="text-[11px] font-bold text-[#86868b] uppercase tracking-wider mb-2">Produtividade</h2>
             <div className="bg-white border border-[#e5e5ea] rounded-xl shadow-sm h-full flex flex-col justify-between">
                
@@ -453,14 +481,6 @@ export default function PerformanceCloserPage() {
                       <span className="text-[10px] text-[#9ca3af]">média</span>
                       <span className="text-[16px] font-bold text-[#1d1d1f]">{reunioesPorDia}</span>
                     </div>
-                  </li>
-                  <li className="py-4 flex justify-between items-center">
-                    <span className="text-[13px] text-[#374151]">Comparecimento</span>
-                    <span className={`text-[16px] font-bold ${comparecimentoMedio >= 65 ? "text-[#16A34A]" : "text-[#DC2626]"}`}>{comparecimentoMedio}%</span>
-                  </li>
-                  <li className="py-4 flex justify-between items-center">
-                    <span className="text-[13px] text-[#374151]">No-Show</span>
-                    <span className={`text-[16px] font-bold ${displayNoShow <= 35 ? "text-[#16A34A]" : "text-[#DC2626]"}`}>{displayNoShow}%</span>
                   </li>
                   <li className="py-4 flex justify-between items-center">
                     <span className="text-[13px] text-[#374151]">Tempo médio de fechamento</span>
@@ -537,7 +557,7 @@ export default function PerformanceCloserPage() {
                             <th className="py-4 text-right pr-4 font-semibold">VENDAS</th>
                             <th className="py-4 text-right pr-4 font-semibold">WIN RATE</th>
                             <th className="py-4 text-right pr-4 font-semibold">TICKET MÉDIO</th>
-                            <th className="py-4 text-right pr-6 font-semibold">NO-SHOW</th>
+                            <th className="py-4 text-right pr-6 font-semibold">CANCELAMENTOS</th>
                          </tr>
                       </thead>
                       <tbody>
@@ -561,7 +581,12 @@ export default function PerformanceCloserPage() {
                                <td className="py-4 text-right pr-4 text-[#374151] font-bold">{row.vendas}</td>
                                <td className={`py-4 text-right pr-4 font-semibold ${row.taxaWin >= 35 ? "text-[#16A34A]" : "text-[#DC2626]"}`}>{row.taxaWin}%</td>
                                <td className="py-4 text-right pr-4 text-[#374151]">{fmtBRL(row.ticketMedio)}</td>
-                               <td className={`py-4 text-right pr-6 font-semibold ${row.taxaNoShow <= 35 ? "text-[#16A34A]" : "text-[#DC2626]"}`}>{row.taxaNoShow}%</td>
+                               <td className="py-4 text-right pr-6">
+                                 <span className={`font-semibold ${(row.taxaCancelamento ?? 0) > 10 ? "text-[#DC2626]" : (row.taxaCancelamento ?? 0) > 0 ? "text-[#d97706]" : "text-[#16A34A]"}`}>
+                                   {row.cancelamentos ?? 0}
+                                 </span>
+                                 <span className="text-[10px] text-[#9ca3af] ml-1">({row.taxaCancelamento ?? 0}%)</span>
+                               </td>
                              </tr>
                              )
                            })

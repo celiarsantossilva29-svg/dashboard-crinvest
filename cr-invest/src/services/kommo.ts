@@ -63,6 +63,7 @@ const STATUS_MAP: Record<string, string> = {
   // ── VENDAS (pipeline closer) ───────────────────────────────────────────────
   "1° Reunião Realizada":       "meeting",
   "2° Reunião AGENDADA":        "scheduled",
+  "2° Reunião Realizada":       "meeting",
   "Reagendamento - R2":         "scheduled",
   "Negociação":                 "meeting",
   "Contato Futuro":             "new",
@@ -119,6 +120,7 @@ interface CustomFieldValues {
   utmMedium?: string;
   utmCampaign?: string;
   reuniaoPreVenda?: Date | null;
+  objetivo?: string;
 }
 
 /**
@@ -146,6 +148,8 @@ function parseCustomFields(fields: any[]): CustomFieldValues {
   const utmMediumRaw = get("utm_medium");
   const utmCampaignRaw = get("utm_campaign");
   const reuniaoRaw = get("Reunião PRÉ-VENDA") ?? get("Reuniao PRE-VENDA") ?? get("reuniao_pre_venda");
+  // "Qual seu principal objetivo" — aba Investimento no Kommo
+  const objetivoRaw = get("Qual seu principal objetivo") ?? get("Qual seu principal objetivo?") ?? get("principal_objetivo") ?? get("objetivo");
 
   // O campo de data no Kommo pode vir como timestamp Unix (number) ou string ISO
   let reuniaoPreVenda: Date | null = null;
@@ -169,6 +173,7 @@ function parseCustomFields(fields: any[]): CustomFieldValues {
     utmMedium: typeof utmMediumRaw === "string" ? utmMediumRaw : undefined,
     utmCampaign: typeof utmCampaignRaw === "string" ? utmCampaignRaw : undefined,
     reuniaoPreVenda,
+    objetivo: typeof objetivoRaw === "string" && objetivoRaw.length > 0 ? objetivoRaw : undefined,
   };
 }
 
@@ -495,11 +500,17 @@ export async function syncKommoData(opts: SyncOptions = {}): Promise<{ synced: n
 
     if (items.length === 0) break;
 
-    // Ignora leads de funis que não são de prospecção ativa
-    const SKIP_PIPELINES = ["CAMPANHA | NUTRIÇÃO", "PÓS-VENDAS"];
+    // ⚠️ Não quebrar em items.length < 250: o parâmetro `with=contacts,...`
+    // pode fazer Kommo retornar menos de 250 itens em páginas intermediárias,
+    // fazendo o sync parar antes de capturar os leads mais recentes. A saída
+    // real é quando a resposta for 204/404 ou items.length === 0 (acima).
+
+    // Ignora apenas leads de funis de nutrição (não são prospecção ativa).
+    // PÓS-VENDAS é incluído para capturar o campo "objetivo" dos clientes ganhos.
+    const SKIP_PIPELINES = ["CAMPANHA | NUTRIÇÃO"];
     const filteredItems = items.filter((item: any) => {
       const pName = (pipelines[item.pipeline_id]?.name ?? "").toUpperCase();
-      return !pName.includes("CAMPANHA") && !pName.includes("NUTRIÇÃO") && !pName.includes("PÓS-VENDAS") && !pName.includes("POS-VENDAS");
+      return !pName.includes("CAMPANHA") && !pName.includes("NUTRIÇÃO");
     });
     const skipped = items.length - filteredItems.length;
     if (skipped > 0) console.log(`Pulando ${skipped} leads de funis ignorados: ${SKIP_PIPELINES.join(", ")}`);
@@ -560,9 +571,9 @@ export async function syncKommoData(opts: SyncOptions = {}): Promise<{ synced: n
     const pageIds = activeItems.map((item: any) => String(item.id));
     const existingSynced = await prisma.lead.findMany({
       where: { id: { in: pageIds } },
-      select: { id: true, syncedAt: true, scheduledAt: true },
+      select: { id: true, syncedAt: true, scheduledAt: true, meetingAt: true, meeting2At: true, meeting2RealizadaAt: true, negociacaoAt: true },
     });
-    const syncedAtMap = new Map(existingSynced.map(l => [l.id, { syncedAt: l.syncedAt, scheduledAt: l.scheduledAt }]));
+    const syncedAtMap = new Map(existingSynced.map(l => [l.id, { syncedAt: l.syncedAt, scheduledAt: l.scheduledAt, meetingAt: l.meetingAt, meeting2At: l.meeting2At, meeting2RealizadaAt: l.meeting2RealizadaAt, negociacaoAt: l.negociacaoAt }]));
 
     updateSync(`Pág. ${page}: salvando ${activeItems.length} leads no banco...`, 0, 0, page);
 
@@ -572,6 +583,13 @@ export async function syncKommoData(opts: SyncOptions = {}): Promise<{ synced: n
       const pipeline = pipelineId != null ? pipelines[pipelineId] : null;
       const stageName = pipeline?.statuses[item.status_id] ?? "";
       const status = mapStatus(stageName, item.status_id ?? 0);
+      const sn_stage = stageName.toLowerCase();
+      const existingUpsert = syncedAtMap.get(String(item.id));
+      const isCurrentlyMeeting2          = (sn_stage.includes("2°") || sn_stage.includes("2ª")) && sn_stage.includes("agendada");
+      const isCurrentlyMeeting2Realizada = (sn_stage.includes("2°") || sn_stage.includes("2ª")) && sn_stage.includes("realizada");
+      const isCurrentlyNegociacao        = sn_stage.includes("negociação") || sn_stage.includes("negociacao");
+      // "1ª Reunião Realizada": status=meeting mas NÃO é 2ª reunião realizada
+      const isCurrentlyMeeting1          = status === "meeting" && !isCurrentlyMeeting2Realizada;
 
       const assignedTo =
         item.responsible_user_id != null
@@ -630,8 +648,17 @@ export async function syncKommoData(opts: SyncOptions = {}): Promise<{ synced: n
           contactAttempts: custom.contactAttempts ?? 0,
           leadPhones,
           tags,
+          ...(custom.objetivo != null ? { objetivo: custom.objetivo } : {}),
           // Campo "Reunião PRÉ-VENDA" tem prioridade sobre a data inferida por etapa
           ...(custom.reuniaoPreVenda != null ? { meetingAt: custom.reuniaoPreVenda } : {}),
+          // Fallback: se o lead está em "1ª Reunião Realizada" mas meetingAt ainda é null,
+          // usa item.updated_at como proxy (mesmo padrão de meeting2At / negociacaoAt)
+          ...(isCurrentlyMeeting1          && !existingUpsert?.meetingAt           ? { meetingAt:           new Date(item.updated_at * 1000) } : {}),
+          // Fallback: se o lead está atualmente em "2ª Reunião AGENDADA"/"Negociação" mas o
+          // timestamp ainda é null (eventos não capturaram), usa item.updated_at como proxy
+          ...(isCurrentlyMeeting2          && !existingUpsert?.meeting2At          ? { meeting2At:          new Date(item.updated_at * 1000) } : {}),
+          ...(isCurrentlyMeeting2Realizada && !existingUpsert?.meeting2RealizadaAt ? { meeting2RealizadaAt: new Date(item.updated_at * 1000) } : {}),
+          ...(isCurrentlyNegociacao        && !existingUpsert?.negociacaoAt        ? { negociacaoAt:        new Date(item.updated_at * 1000) } : {}),
           syncedAt: new Date(),
         },
         create: {
@@ -659,6 +686,7 @@ export async function syncKommoData(opts: SyncOptions = {}): Promise<{ synced: n
           contactAttempts: custom.contactAttempts ?? 0,
           leadPhones,
           tags,
+          ...(custom.objetivo != null ? { objetivo: custom.objetivo } : {}),
           syncedAt: new Date(),
         },
       });
@@ -672,7 +700,7 @@ export async function syncKommoData(opts: SyncOptions = {}): Promise<{ synced: n
     const sixMonthsAgo = new Date(Date.now() - 180 * 24 * 3600 * 1000);
     const leadsToEnrich = activeItems.filter((item: any) => {
       // Pula leads fechados (won/lost) há mais de 6 meses — nunca mudam
-      const closedAt = item.closed_at ? new Date(item.closed_at * 1000) : null;
+      const closedAt = (item.closed_at && item.closed_at > 0) ? new Date(item.closed_at * 1000) : null;
       const isClosed = item.status_id === 142 || item.status_id === 143; // won/lost IDs padrão Kommo
       if (isClosed && closedAt && closedAt < sixMonthsAgo) return false;
 
@@ -686,6 +714,28 @@ export async function syncKommoData(opts: SyncOptions = {}): Promise<{ synced: n
         const stageForCheck = pipelineForCheck?.statuses[item.status_id] ?? "";
         const statusForCheck = mapStatus(stageForCheck, item.status_id ?? 0);
         if (statusForCheck === "scheduled" || statusForCheck === "meeting") return true;
+      }
+
+      // Força enriquecimento se o lead está em "1ª Reunião Realizada" mas meetingAt ainda é null —
+      // cobre leads que já tinham scheduledAt (scheduled antes do período) e passaram para
+      // meeting sem que o sync recapturasse o evento de mudança de etapa.
+      if (!existing?.meetingAt) {
+        const pipelineForCheck = item.pipeline_id != null ? pipelines[item.pipeline_id] : null;
+        const stageForCheck = pipelineForCheck?.statuses[item.status_id] ?? "";
+        const statusForCheck = mapStatus(stageForCheck, item.status_id ?? 0);
+        if (statusForCheck === "meeting") return true;
+      }
+
+      // Força enriquecimento se está em etapas de 2ª reunião ou Negociação mas timestamps são null
+      {
+        const pipelineForCheck = item.pipeline_id != null ? pipelines[item.pipeline_id] : null;
+        const snCheck = (pipelineForCheck?.statuses[item.status_id] ?? "").toLowerCase();
+        const isIn2aAgendada   = (snCheck.includes("2°") || snCheck.includes("2ª")) && snCheck.includes("agendada");
+        const isIn2aRealizada  = (snCheck.includes("2°") || snCheck.includes("2ª")) && snCheck.includes("realizada");
+        const isInNegociacao   = snCheck.includes("negociação") || snCheck.includes("negociacao");
+        if (isIn2aAgendada  && !existing?.meeting2At)          return true;
+        if (isIn2aRealizada && !existing?.meeting2RealizadaAt) return true;
+        if (isInNegociacao  && !existing?.negociacaoAt)        return true;
       }
 
       const lastSynced = existing?.syncedAt ?? null;
@@ -709,8 +759,10 @@ export async function syncKommoData(opts: SyncOptions = {}): Promise<{ synced: n
 
       try {
         const idParams = batch.map((item: any) => `filter[entity_id][]=${item.id}`).join("&");
+        // Filtra apenas mudanças de etapa: reduz volume de eventos de ~15-25/lead para ~2-5/lead,
+        // garantindo que o limite de 250 não corte eventos relevantes em batches de 20 leads.
         const res = await fetch(
-          `${BASE()}/events?filter[entity]=lead&${idParams}&limit=250`,
+          `${BASE()}/events?filter[entity]=lead&${idParams}&filter[type][]=lead_status_changed&limit=250`,
           { headers: { Authorization: `Bearer ${accessToken}` } }
         );
         if (res.ok && res.status !== 204) {
@@ -736,7 +788,6 @@ export async function syncKommoData(opts: SyncOptions = {}): Promise<{ synced: n
       await new Promise(r => setTimeout(r, 250));
     }
 
-    if (items.length < 250) break;
     page++;
 
     // Pausa leve para não estourar o rate limit do Kommo (7 req/s por token)
@@ -766,11 +817,13 @@ async function processLeadEvents(
 
   const timestamps: {
     contactedAt?: Date;
+    firstContactAt?: Date;
     qualifiedAt?: Date;
     scheduledAt?: Date;
     scheduledBy?: string | null;
     meetingAt?: Date;
     meeting2At?: Date;
+    meeting2RealizadaAt?: Date;
     negociacaoAt?: Date;
     reagendadoAt?: Date;
     reagendadoCount?: number;
@@ -791,10 +844,16 @@ async function processLeadEvents(
     const ts = new Date(ev.created_at * 1000);
     const sn = stageName.toLowerCase();
 
-    if (status === "contacted" && !timestamps.contactedAt) timestamps.contactedAt = ts;
+    if (status === "contacted" && !timestamps.contactedAt) {
+      timestamps.contactedAt = ts;
+      timestamps.firstContactAt = ts; // Speed to Lead: primeiro contato humano real
+    }
     if (status === "qualified"  && !timestamps.qualifiedAt)  timestamps.qualifiedAt = ts;
 
-    const isReuniaoRealizada = afterStatusId === 88992835 || sn.includes("reunião realizada") && !sn.includes("2");
+    const isReuniao2Realizada = (sn.includes("2°") || sn.includes("2ª")) && sn.includes("reunião realizada");
+    if (isReuniao2Realizada && !timestamps.meeting2RealizadaAt) timestamps.meeting2RealizadaAt = ts;
+
+    const isReuniaoRealizada = (afterStatusId === 88992835 || sn.includes("reunião realizada")) && !isReuniao2Realizada;
     if (isReuniaoRealizada && !timestamps.meetingAt) {
       timestamps.meetingAt = ts;
       // BACKFILL: Se teve reunião, necessariamente foi agendado.
@@ -804,8 +863,8 @@ async function processLeadEvents(
       }
     }
 
-    const isReuniao2 = sn.includes("2°") || sn.includes("2ª") || sn.includes("segunda reunião") || sn.includes("2a reunião");
-    if (isReuniao2 && !timestamps.meeting2At) timestamps.meeting2At = ts;
+    const isReuniao2Agendada = (sn.includes("2°") || sn.includes("2ª") || sn.includes("segunda reunião") || sn.includes("2a reunião")) && !sn.includes("realizada");
+    if (isReuniao2Agendada && !timestamps.meeting2At) timestamps.meeting2At = ts;
 
     const isNegociacao = sn.includes("negociação") || sn.includes("negociacao");
     if (isNegociacao && !timestamps.negociacaoAt) {
@@ -874,7 +933,7 @@ export async function syncLeadHistory(leadId: string): Promise<void> {
   const [pipelines, users, res] = await Promise.all([
     fetchKommoPipelines(accessToken),
     fetchKommoUsers(accessToken),
-    fetch(`${BASE()}/events?filter[entity]=lead&filter[entity_id][]=${leadId}&limit=250`, {
+    fetch(`${BASE()}/events?filter[entity]=lead&filter[entity_id][]=${leadId}&filter[type][]=lead_status_changed&limit=250`, {
       headers: { Authorization: `Bearer ${accessToken}` },
     }),
   ]);
