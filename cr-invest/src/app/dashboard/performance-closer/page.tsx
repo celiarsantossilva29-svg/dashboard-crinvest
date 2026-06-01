@@ -365,15 +365,15 @@ export default function PerformanceCloserPage() {
 
             <div className="flex items-center gap-0 w-full mb-3">
 
-               {/* STEP 1 */}
+               {/* STEP 1 — usa total de reuniões do período (date-based), não snapshot */}
                <div className="flex-1 bg-white border border-[#e5e5ea] rounded-xl p-5 shadow-sm relative">
                   <h3 className="text-[10px] font-bold text-[#86868b] uppercase mb-2">1ª Reunião Realizada</h3>
-                  <p className="text-[28px] font-normal leading-none text-[#1d1d1f] mb-1">{funilSnapshot?.reuniao1Realizada ?? reunioesFeitas}</p>
+                  <p className="text-[28px] font-normal leading-none text-[#1d1d1f] mb-1">{reunioesFeitas}</p>
                   <p className="text-[11px] font-medium text-[#1d1d1f] mb-4">Meta {targetReunioes}</p>
 
                   <div className="inline-flex items-center gap-2 bg-[#fdfaec] px-3 py-1.5 rounded-md mb-6">
                      <svg className="w-4 h-4 text-[#d97706]" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M10 9a3 3 0 100-6 3 3 0 000 6zm-7 9a7 7 0 1114 0H3z" clipRule="evenodd" /></svg>
-                     <span className="text-[13px] font-bold text-[#d97706]">{Math.round(((funilSnapshot?.reuniao1Realizada ?? reunioesFeitas) / targetReunioes) * 100)}%</span>
+                     <span className="text-[13px] font-bold text-[#d97706]">{Math.round((reunioesFeitas / targetReunioes) * 100)}%</span>
                   </div>
 
                   <div className="border-t border-[#f0f0f5] pt-3 flex items-center justify-between">
@@ -454,14 +454,14 @@ export default function PerformanceCloserPage() {
 
                   <div className="border-t border-[#f0f0f5] pt-3 flex items-center justify-between">
                      <span className="text-[10px] font-bold text-[#1d1d1f]">Taxa Venda/1ª</span>
-                     <span className="text-[12px] font-bold text-[#1d1d1f]">{(funilSnapshot?.reuniao1Realizada ?? 0) > 0 ? Math.round((totalVendasPeriodo / (funilSnapshot?.reuniao1Realizada ?? 1)) * 100) : 0}%</span>
+                     <span className="text-[12px] font-bold text-[#1d1d1f]">{reunioesFeitas > 0 ? Math.round((totalVendasPeriodo / reunioesFeitas) * 100) : 0}%</span>
                   </div>
                </div>
 
             </div>
 
             <div className="bg-[#f0f0f5]/60 rounded-md py-3 text-center">
-               <p className="text-[12px] text-[#1d1d1f]">Taxa geral do funil: <span className="font-bold text-[#1d1d1f]">{(funilSnapshot?.reuniao1Realizada ?? 0) > 0 ? Math.round((totalVendasPeriodo / (funilSnapshot?.reuniao1Realizada ?? 1)) * 100) : 0}%</span> <span className="text-[#86868b] mx-2">•</span> <span className="text-[#374151]">De Reunião 1 até a venda</span></p>
+               <p className="text-[12px] text-[#1d1d1f]">Taxa geral do funil: <span className="font-bold text-[#1d1d1f]">{reunioesFeitas > 0 ? Math.round((totalVendasPeriodo / reunioesFeitas) * 100) : 0}%</span> <span className="text-[#86868b] mx-2">•</span> <span className="text-[#374151]">De Reunião 1 até a venda</span></p>
             </div>
           </div>
 
